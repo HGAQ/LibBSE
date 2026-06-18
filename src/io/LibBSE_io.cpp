@@ -1,4 +1,4 @@
-#include "../../include/io/LibBSE_io.hpp"
+#include "LibBSE_io.hpp"
 
 #include <cstdio>
 #include <mpi.h>

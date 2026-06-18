@@ -10,5 +10,5 @@ cmake --build ./LibBSE/build -j4
 ## How to run LibBSE
 
 ```
-./LibBSE/build/LibBSE ./2MGO >> ./LibBSE.out
+mpirun -np 2 ./LibBSE/build/LibBSE ./2MGO >> ./LibBSE.out
 ```

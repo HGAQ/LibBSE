@@ -1,4 +1,4 @@
-#include "../../include/mpi/LibBSE_mpi.h"
+#include "../mpi/LibBSE_mpi.h"
 
 #include <stdexcept>
 
