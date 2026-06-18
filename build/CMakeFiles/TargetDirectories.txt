@@ -1,0 +1,3 @@
+/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/LibBSE.dir
+/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/edit_cache.dir
+/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/rebuild_cache.dir
