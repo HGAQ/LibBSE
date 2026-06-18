@@ -18,6 +18,8 @@
 namespace fs = std::filesystem;
 
 namespace LibBSE{
+    typedef std::pair<std::string, std::vector<double>> AtomPos;
+
     struct FileAssignment {
         bool read_file = false;
         int first_rank = 0;
@@ -49,14 +51,6 @@ namespace LibBSE{
         std::vector<std::complex<double>> value;
     };
 
-    struct RIBlock {
-        int file_index = -1;
-        int i_atom = 0, j_atom = 0;
-        int n_1 = 0, n_2 = 0, n_3 = 0;
-        int n_basis_i = 0, n_basis_j = 0, n_aux_basis_i = 0;
-        std::vector<double> value;
-    };
-
     struct KSBlock {
         int file_index = -1;
         int i_k_point = 0;
@@ -69,6 +63,8 @@ namespace LibBSE{
     struct Enviroment{
         public:
             Enviroment(){}
+            //dataset root
+            std::string dataset_dir;
             //band_out inputs
             int n_k_point;
             int n_band_spin;
@@ -85,11 +81,12 @@ namespace LibBSE{
             int ir_k_point;
             //vxc_out inputs
             std::vector<std::vector<std::vector<double>>> vxc;
+            //geometry.in inputs
+            std::vector<AtomPos> atoms_pos;
+            int n_atom;
             //coulomb inputs
             std::vector<CoulombBlock> local_coulomb_cut;
             std::vector<CoulombBlock> local_coulomb_mat;
-            //RI inputs
-            std::vector<RIBlock> local_RI_coeff;
             //KS_eigvect inputs
             std::vector<KSBlock> local_KS_eigenvector;
     };
@@ -105,9 +102,9 @@ namespace LibBSE{
     int read_band_out(const fs::path directory, Enviroment& Envir);
     int read_struct_out(const fs::path directory, Enviroment& Envir);
     int read_vxc_out(const fs::path directory, Enviroment& Envir);
+    int read_geometry_in(const fs::path directory, Enviroment& Envir);
     int read_coulomb_cut(const fs::path directory, Enviroment& Envir, const MpiComm& Comm);
     int read_coulomb_mat(const fs::path directory, Enviroment& Envir, const MpiComm& Comm);
-    int read_Cs_data(const fs::path directory, Enviroment& Envir, const MpiComm& Comm);
     int read_KS_eigenvector(const fs::path directory, Enviroment& Envir, const MpiComm& Comm);
     bool assigned_to_rank(int block_index, const MpiComm& Comm);
 }

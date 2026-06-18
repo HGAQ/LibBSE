@@ -48,6 +48,145 @@ namespace LibBSE
         return assignment;
     }
 
+    static void bcast_vector_int(std::vector<int>& values, const MpiComm& comm)
+    {
+        int count = comm.LibBSE_MPI_is_root() ? static_cast<int>(values.size()) : 0;
+        MPI_Bcast(&count, 1, MPI_INT, 0, comm.LibBSE_MPI_raw());
+        if (!comm.LibBSE_MPI_is_root()) {
+            values.resize(static_cast<std::size_t>(count));
+        }
+        if (count > 0) {
+            MPI_Bcast(values.data(), count, MPI_INT, 0, comm.LibBSE_MPI_raw());
+        }
+    }
+
+    static void bcast_vector_atompos(std::vector<AtomPos>& values, const MpiComm& comm)
+    {
+        int count = comm.LibBSE_MPI_is_root() ? static_cast<int>(values.size()) : 0;
+        MPI_Bcast(&count, 1, MPI_INT, 0, comm.LibBSE_MPI_raw());
+        if (!comm.LibBSE_MPI_is_root()) {
+            values.resize(static_cast<std::size_t>(count));
+        }
+
+        for (int i = 0; i < count; ++i) {
+            // Atom symbols are tiny, but still need an explicit length before
+            // broadcasting the string payload.
+            int name_size = comm.LibBSE_MPI_is_root()
+                          ? static_cast<int>(values[static_cast<std::size_t>(i)].first.size())
+                          : 0;
+            MPI_Bcast(&name_size, 1, MPI_INT, 0, comm.LibBSE_MPI_raw());
+
+            std::string name;
+            if (comm.LibBSE_MPI_is_root()) {
+                name = values[static_cast<std::size_t>(i)].first;
+            }
+            else {
+                name.resize(static_cast<std::size_t>(name_size));
+            }
+            if (name_size > 0) {
+                MPI_Bcast(&name[0], name_size, MPI_CHAR, 0, comm.LibBSE_MPI_raw());
+            }
+
+            int pos_size = comm.LibBSE_MPI_is_root()
+                         ? static_cast<int>(values[static_cast<std::size_t>(i)].second.size())
+                         : 0;
+            MPI_Bcast(&pos_size, 1, MPI_INT, 0, comm.LibBSE_MPI_raw());
+            if (!comm.LibBSE_MPI_is_root()) {
+                values[static_cast<std::size_t>(i)].second.resize(static_cast<std::size_t>(pos_size));
+            }
+            if (pos_size > 0) {
+                MPI_Bcast(values[static_cast<std::size_t>(i)].second.data(),
+                          pos_size, MPI_DOUBLE, 0, comm.LibBSE_MPI_raw());
+            }
+
+            if (!comm.LibBSE_MPI_is_root()) {
+                values[static_cast<std::size_t>(i)].first = std::move(name);
+            }
+        }
+    }
+
+
+    static void bcast_matrix_double(std::vector<std::vector<double>>& matrix,
+                                    int rows,
+                                    int cols,
+                                    const MpiComm& comm)
+    {
+        std::vector<double> flat(static_cast<std::size_t>(rows * cols), 0.0);
+
+        if (comm.LibBSE_MPI_is_root()) {
+            for (int i = 0; i < rows; ++i) {
+                for (int j = 0; j < cols; ++j) {
+                    flat[static_cast<std::size_t>(i * cols + j)] = matrix[i][j];
+                }
+            }
+        }
+
+        if (!flat.empty()) {
+            MPI_Bcast(flat.data(), rows * cols, MPI_DOUBLE, 0, comm.LibBSE_MPI_raw());
+        }
+
+        if (!comm.LibBSE_MPI_is_root()) {
+            matrix.assign(static_cast<std::size_t>(rows),
+                          std::vector<double>(static_cast<std::size_t>(cols), 0.0));
+            for (int i = 0; i < rows; ++i) {
+                for (int j = 0; j < cols; ++j) {
+                    matrix[i][j] = flat[static_cast<std::size_t>(i * cols + j)];
+                }
+            }
+        }
+    }
+
+ 
+
+    static void bcast_KS_band(Enviroment& Envir, const MpiComm& comm)
+    {
+        const int block_count = Envir.n_k_point * Envir.n_band_spin;
+        std::vector<int> band_meta(static_cast<std::size_t>(2 * block_count), 0);
+        std::vector<double> band_data(
+            static_cast<std::size_t>(2 * block_count * Envir.n_band_state), 0.0);
+
+        if (comm.LibBSE_MPI_is_root()) {
+            for (int iblock = 0; iblock < block_count; ++iblock) {
+                const BandVect& bands = Envir.KS_Band[static_cast<std::size_t>(iblock)];
+                band_meta[static_cast<std::size_t>(2 * iblock)] = bands.i_k_point;
+                band_meta[static_cast<std::size_t>(2 * iblock + 1)] = bands.i_band_spin;
+                for (int istate = 0; istate < Envir.n_band_state; ++istate) {
+                    const std::size_t index =
+                        static_cast<std::size_t>(2 * (iblock * Envir.n_band_state + istate));
+                    band_data[index] = bands.Band[static_cast<std::size_t>(istate)].band_occ;
+                    band_data[index + 1] = bands.Band[static_cast<std::size_t>(istate)].E_band;
+                }
+            }
+        }
+
+        if (!band_meta.empty()) {
+            MPI_Bcast(band_meta.data(), static_cast<int>(band_meta.size()),
+                      MPI_INT, 0, comm.LibBSE_MPI_raw());
+        }
+        if (!band_data.empty()) {
+            MPI_Bcast(band_data.data(), static_cast<int>(band_data.size()),
+                      MPI_DOUBLE, 0, comm.LibBSE_MPI_raw());
+        }
+
+        if (!comm.LibBSE_MPI_is_root()) {
+            Envir.KS_Band.clear();
+            Envir.KS_Band.reserve(static_cast<std::size_t>(block_count));
+            for (int iblock = 0; iblock < block_count; ++iblock) {
+                BandVect bands;
+                bands.i_k_point = band_meta[static_cast<std::size_t>(2 * iblock)];
+                bands.i_band_spin = band_meta[static_cast<std::size_t>(2 * iblock + 1)];
+                bands.Band.resize(static_cast<std::size_t>(Envir.n_band_state));
+                for (int istate = 0; istate < Envir.n_band_state; ++istate) {
+                    const std::size_t index =
+                        static_cast<std::size_t>(2 * (iblock * Envir.n_band_state + istate));
+                    bands.Band[static_cast<std::size_t>(istate)].band_occ = band_data[index];
+                    bands.Band[static_cast<std::size_t>(istate)].E_band = band_data[index + 1];
+                }
+                Envir.KS_Band.push_back(std::move(bands));
+            }
+        }
+    }
+
     int read_coulomb_group(const fs::path directory,
                                          std::vector<CoulombBlock>& local_coulomb_blocks,
                                          const MpiComm& comm,
@@ -119,85 +258,6 @@ namespace LibBSE
     }
 
     
-    int read_RI_coeff_group(const fs::path directory,
-                            std::vector<RIBlock>& local_RI_coeff,
-                            const MpiComm& comm,
-                            const std::string& prefix){
-        const std::vector<IndexedFile> files = find_indexed_files(directory, prefix, ".txt");
-
-        for (int ifile = 0; ifile < files.size(); ++ifile) {
-            const IndexedFile& file = files[ifile];
-            const FileAssignment assignment = assign_file_to_rank(ifile, files.size(), comm);
-            if (!assignment.read_file || fs::file_size(file.path) == 0) {
-                continue;
-            }
-            std::ifstream input(file.path);
-            if (!input) {
-                std::cerr << "LibBSE[Read]: failed to open RI coeff file " << file.path.string() << "\n";
-                return 1;
-            }
-
-            //Start read file!
-            int n_atom = 0;
-            int n_cell = 0;
-            input >> n_atom >> n_cell;
-            if (!input) {
-                std::cerr << "LibBSE[Read]: failed to read RI coeff header " << file.path.string() << "\n";
-                return 1;
-            }
-
-            // Cs_data starts with n_atom and n_cell, but the file stores the actual
-            // (i_atom,j_atom,R) blocks sequentially.  Some datasets do not contain
-            // all n_atom*n_atom*n_cell combinations, so read block headers until EOF.
-            int iblock = 0;
-            while (true) {
-                RIBlock block;
-                block.file_index = file.index;
-
-                if (!(input >> block.i_atom >> block.j_atom
-                            >> block.n_1 >> block.n_2 >> block.n_3
-                            >> block.n_basis_i >> block.n_basis_j >> block.n_aux_basis_i)) {
-                    if (input.eof()) {
-                        break;
-                    }
-                    std::cerr << "LibBSE[Read]: failed to read RI coeff block header "
-                              << file.path.string() << "\n";
-                    return 1;
-                }
-
-                const int block_size =
-                    block.n_basis_i * block.n_basis_j * block.n_aux_basis_i;
-                if (block_size <= 0 || !input) {
-                    std::cerr << "LibBSE[Read]: invalid RI coeff block " << file.path.string() << "\n";
-                    return 1;
-                }
-
-                // Split blocks only inside the rank group assigned to this file.
-                // If the file has one owner rank, that rank keeps all blocks.
-                const bool keep_block =
-                    (iblock % assignment.rank_count == assignment.local_rank);
-                if (keep_block) {
-                    block.value.reserve(static_cast<std::size_t>(block_size));
-                }
-                for (int i = 0; i < block_size; ++i) {
-                    double value = 0.0;
-                    input >> value;
-                    if (!input) {
-                        std::cerr << "LibBSE[Read]: failed to read RI coeff value " << file.path.string() << "\n";
-                        return 1;
-                    }
-                    if (keep_block) {
-                        block.value.push_back(value);
-                    }
-                }
-                if (keep_block) {
-                    local_RI_coeff.push_back(std::move(block));
-                }
-                ++iblock;
-            }
-        }
-        return 0;
-    }
 
     int read_KS_eigenvector_group(const fs::path directory,
                                   std::vector<KSBlock>& local_KS_eigenvector,
@@ -262,6 +322,7 @@ namespace LibBSE
 
     int read_aims_output(const std::string& directory, Enviroment &Envir, const MpiComm& Comm){
         const fs::path root(directory);
+        Envir.dataset_dir = root.string();
         int read_status = 0;
         if (Comm.LibBSE_MPI_is_root()) {
             read_status = read_band_out(root / "band_out", Envir);
@@ -271,32 +332,42 @@ namespace LibBSE
             if (read_status == 0) {
                 read_status = read_vxc_out(root / "vxc_out", Envir);
             }
+            if (read_status == 0) {
+                read_status = read_geometry_in(root / "geometry.in", Envir);
+            }
         }
         MPI_Bcast(&read_status, 1, MPI_INT, 0, Comm.LibBSE_MPI_raw());
         if (read_status != 0) {
             return read_status;
         }
+
+        // Root reads the small global metadata from band_out/stru_out/geometry.in.
+        // Every rank later calls LibRI RPA setup, so every rank needs the same
+        // lattice, k mesh, band data, and atom positions.
         MPI_Bcast(&Envir.n_k_point, 1, MPI_INT, 0, Comm.LibBSE_MPI_raw());
         MPI_Bcast(&Envir.n_band_spin, 1, MPI_INT, 0, Comm.LibBSE_MPI_raw());
         MPI_Bcast(&Envir.n_band_state, 1, MPI_INT, 0, Comm.LibBSE_MPI_raw());
         MPI_Bcast(&Envir.n_basis, 1, MPI_INT, 0, Comm.LibBSE_MPI_raw());
         MPI_Bcast(&Envir.E_Fermi, 1, MPI_DOUBLE, 0, Comm.LibBSE_MPI_raw());
         MPI_Bcast(&Envir.ir_k_point, 1, MPI_INT, 0, Comm.LibBSE_MPI_raw());
+        MPI_Bcast(&Envir.n_atom, 1, MPI_INT, 0, Comm.LibBSE_MPI_raw());
+        bcast_matrix_double(Envir.lattice_vect, 3, 3, Comm);
+        bcast_matrix_double(Envir.reciprocal_vect, 3, 3, Comm);
+        bcast_vector_int(Envir.k_point_dim, Comm);
+        bcast_vector_atompos(Envir.atoms_pos, Comm);
+        bcast_matrix_double(Envir.k_point_list, Envir.n_k_point, 3, Comm);
+        bcast_vector_int(Envir.map_from_FullBZ_to_IBZ, Comm);
+        bcast_KS_band(Envir, Comm);
 
         // Each rank stores only the Coulomb blocks assigned to it.
         Envir.local_coulomb_cut.clear();
         Envir.local_coulomb_mat.clear();
-        Envir.local_RI_coeff.clear();
         Envir.local_KS_eigenvector.clear();
         read_status = read_coulomb_cut(root, Envir, Comm);
         if (read_status != 0) {
             return read_status;
         }
         read_status = read_coulomb_mat(root, Envir, Comm);
-        if (read_status != 0) {
-            return read_status;
-        }
-        read_status = read_Cs_data(root, Envir, Comm);
         if (read_status != 0) {
             return read_status;
         }
@@ -307,12 +378,10 @@ namespace LibBSE
 
         LibBSE_printf_all(Comm, "stored cut_blocks=%zu"
                                 ", mat_blocks=%zu"
-                                ", RI_blocks=%zu"
                                 ", KS_blocks=%zu"
                                 ", ir_k_point=%d\n",
                                 Envir.local_coulomb_cut.size(),
                                 Envir.local_coulomb_mat.size(),
-                                Envir.local_RI_coeff.size(),
                                 Envir.local_KS_eigenvector.size(),
                                 Envir.ir_k_point);
         LibBSE_printf_root(Comm, "Read band_out: nkpoint=%d, spin=%d, states=%d, basis=%d, E_Fermi=%f\n",
@@ -478,16 +547,83 @@ namespace LibBSE
     }
 
 
+    int read_geometry_in(const fs::path file, Enviroment &Envir){
+        if (!fs::exists(file)) {
+            std::cerr << "LibBSE[Read]: geometry.in does not exist: " << file << "\n";
+            return 1;
+        }
+        std::ifstream input(file);
+        if (!input) {
+            std::cerr << "LibBSE[Read]: failed to open file " << file << "\n";
+            return 1;
+        }
+        std::string line;
+        Envir.atoms_pos.clear();
+        Envir.n_atom = 0;
+
+        while(std::getline(input, line)){
+            if(line.empty()||line[0] == '#'){
+                continue;
+            }
+
+            std::istringstream iss(line);
+            std::string keyword;
+            iss >> keyword;
+            if (!iss) {
+                continue;
+            }
+
+            if (keyword != "atom_frac" && keyword != "atom") {
+                continue;
+            }
+
+            std::string atom;
+            double x = 0.0;
+            double y = 0.0;
+            double z = 0.0;
+            if (!(iss >> x >> y >> z >> atom)) {
+                std::cerr << "LibBSE[Read]: failed to read geometry.in atom line " << file << "\n";
+                return 1;
+            }
+
+            std::vector<double> pos(3, 0.0);
+            if (keyword == "atom_frac") {
+                if (Envir.lattice_vect.size() != 3) {
+                    std::cerr << "LibBSE[Read]: lattice vectors are needed before atom_frac positions "
+                              << file << "\n";
+                    return 1;
+                }
+                // geometry.in atom_frac gives fractional coordinates.  Convert
+                // with stru_out lattice vectors so atom positions use the same
+                // unit system as the latvec passed to LibRI.
+                const double frac[3] = {x, y, z};
+                for (int ia = 0; ia < 3; ++ia) {
+                    for (int ix = 0; ix < 3; ++ix) {
+                        pos[ix] += frac[ia] * Envir.lattice_vect[ia][ix];
+                    }
+                }
+            }
+            else {
+                constexpr double AngstromToBohr = 1.8897259886;
+                // FHI-aims Cartesian atom lines are in Angstrom.  stru_out
+                // lattice vectors are in Bohr, so convert before LibRI sees it.
+                pos[0] = x * AngstromToBohr;
+                pos[1] = y * AngstromToBohr;
+                pos[2] = z * AngstromToBohr;
+            }
+
+            Envir.atoms_pos.push_back(AtomPos{atom, pos});
+            ++Envir.n_atom;
+        }
+        return 0;
+    }
+
     int read_coulomb_cut(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
         return read_coulomb_group(directory, Envir.local_coulomb_cut, comm, "coulomb_cut_");
     }
 
     int  read_coulomb_mat(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
         return read_coulomb_group(directory, Envir.local_coulomb_mat, comm, "coulomb_mat_");
-    }
-
-    int read_Cs_data(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
-        return read_RI_coeff_group(directory, Envir.local_RI_coeff, comm, "Cs_data_");
     }
 
     int read_KS_eigenvector(const fs::path directory, Enviroment& Envir, const MpiComm& comm){

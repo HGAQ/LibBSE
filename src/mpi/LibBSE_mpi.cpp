@@ -11,7 +11,13 @@ MpiRuntime::MpiRuntime(int& argc, char**& argv)
     MPI_Initialized(&initialized);
     if (!initialized) {
         int provided = MPI_THREAD_SINGLE;
-        MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
+        // LibComm launches std::thread/std::async workers which call MPI_Test
+        // during tensor redistribution, so MPI calls are not limited to the
+        // main thread.  Request the thread level required by that path.
+        MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
+        if (provided < MPI_THREAD_MULTIPLE) {
+            throw std::runtime_error("MPI implementation does not provide MPI_THREAD_MULTIPLE");
+        }
         MPI_initialized = true;
         LibBSE_mpi_initialized = true;
     }

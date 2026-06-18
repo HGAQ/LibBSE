@@ -7,6 +7,7 @@
 #include "../src/io/LibBSE_io.hpp"
 #include "../src/io/Read_aims_output.h"
 #include "../src/mpi/LibBSE_mpi.h"
+#include "../src/RI/Chi_0.h"
 
 using namespace LibBSE;
 
@@ -23,7 +24,7 @@ int LibBSE_initialize(int argc, char **argv){
         }
         else{
             LibBSE_printf_root(LIBBSE_MPI_COMM,
-            "This is LibBSE, version 0.0.0 \n"
+            "This is LibBSE, version 0.0.1 \n"
             "========================================\n"
             "Successfully initialized io! \n");
         }
@@ -49,8 +50,12 @@ int main(int argc, char** argv)
         return 1;
     }
     //start reading aims output;
-    LibBSE::Enviroment Enviro;
+    Enviroment Enviro;
     if (read_aims_output(argv[1], Enviro, LIBBSE_MPI_COMM) != 0) {
+        return 1;
+    }
+    //start main loop of BSE;
+    if (calculate_chi0(Enviro, LIBBSE_MPI_COMM) != 0) {
         return 1;
     }
 
