@@ -50,7 +50,9 @@ int main(int argc, char** argv)
     }
     //start reading aims output;
     LibBSE::Enviroment Enviro;
-    read_aims_output(argv[1], Enviro);
+    if (read_aims_output(argv[1], Enviro, LIBBSE_MPI_COMM) != 0) {
+        return 1;
+    }
 
     if(LibBSE_finalized() != 0){
         return 1;
