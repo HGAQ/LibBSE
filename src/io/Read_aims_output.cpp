@@ -193,6 +193,7 @@ namespace LibBSE
                                          const std::string& prefix){
         const std::vector<IndexedFile> files = find_indexed_files(directory, prefix, ".txt");
 
+        int n_aux_basis = 0;
         for (int ifile = 0; ifile < files.size(); ++ifile) {
             const IndexedFile& file = files[ifile];
             const FileAssignment assignment = assign_file_to_rank(ifile, files.size(), comm);
@@ -202,16 +203,15 @@ namespace LibBSE
             std::ifstream input(file.path);
             if (!input) {
                 std::cerr << "LibBSE[Read]: failed to open Coulomb file " << file.path.string() << "\n";
-                return 1;
+                return -1;
             }
 
             //Start read file!
             int ir_k_point = 0;
-            int n_aux_basis = 0;
             input >> ir_k_point;
             if (!input) {
                 std::cerr << "LibBSE[Read]: failed to read Coulomb block count " << file.path.string() << "\n";
-                return 1;
+                return -1;
             }
 
             for (int iblock = 0; iblock < ir_k_point; ++iblock) {
@@ -227,7 +227,7 @@ namespace LibBSE
                 const int cols = block.col_last - block.col_first + 1;
                 if (rows <= 0 || cols <= 0 || !input) {
                     std::cerr << "LibBSE[Read]: invalid Coulomb block " << file.path.string() << "\n";
-                    return 1;
+                    return -1;
                 }
 
                 // Split blocks only inside the rank group assigned to this file.
@@ -243,7 +243,7 @@ namespace LibBSE
                     input >> real >> imag;
                     if (!input) {
                         std::cerr << "LibBSE[Read]: failed to read Coulomb value " << file.path.string() << "\n";
-                        return 1;
+                        return -1;
                     }
                     if (keep_block) {
                         block.value.emplace_back(real, imag);
@@ -254,7 +254,7 @@ namespace LibBSE
                 }
             }
         }
-        return 0;
+        return n_aux_basis;
     }
 
     
@@ -320,6 +320,99 @@ namespace LibBSE
         return 0;
     }
 
+    int read_RI_coeff_group(const fs::path directory,
+                            std::vector<RIBlock>& local_RI_coeff,
+                            const MpiComm& comm,
+                            const std::string& prefix){
+        const std::vector<IndexedFile> files = find_indexed_files(directory, prefix, ".txt");
+
+        for (int ifile = 0; ifile < files.size(); ++ifile) {
+            const IndexedFile& file = files[ifile];
+            const FileAssignment assignment = assign_file_to_rank(ifile, files.size(), comm);
+            if (!assignment.read_file || fs::file_size(file.path) == 0) {
+                continue;
+            }
+            std::ifstream input(file.path);
+            if (!input) {
+                std::cerr << "LibBSE[Read]: failed to open RI coeff file " << file.path.string() << "\n";
+                return 1;
+            }
+
+            //Start read file!
+            int n_atom = 0;
+            int n_cell = 0;
+            input >> n_atom >> n_cell;
+            if (!input) {
+                std::cerr << "LibBSE[Read]: failed to read RI coeff header " << file.path.string() << "\n";
+                return 1;
+            }
+
+            // Cs_data starts with n_atom and n_cell, but the file stores the actual
+            // (i_atom,j_atom,R) blocks sequentially.  Some datasets do not contain
+            // all n_atom*n_atom*n_cell combinations, so read block headers until EOF.
+            int iblock = 0;
+            while (true) {
+                RIBlock block;
+                block.file_index = file.index;
+
+                if (!(input >> block.i_atom >> block.j_atom
+                            >> block.n_1 >> block.n_2 >> block.n_3
+                            >> block.n_basis_i >> block.n_basis_j >> block.n_aux_basis_i)) {
+                    if (input.eof()) {
+                        break;
+                    }
+                    std::cerr << "LibBSE[Read]: failed to read RI coeff block header "
+                              << file.path.string() << "\n";
+                    return 1;
+                }
+
+                const int block_size =
+                    block.n_basis_i * block.n_basis_j * block.n_aux_basis_i;
+                if (block_size <= 0 || !input) {
+                    std::cerr << "LibBSE[Read]: invalid RI coeff block " << file.path.string() << "\n";
+                    return 1;
+                }
+
+                // Split blocks only inside the rank group assigned to this file.
+                // If the file has one owner rank, that rank keeps all blocks.
+                const bool keep_block =
+                    (iblock % assignment.rank_count == assignment.local_rank);
+                if (keep_block) {
+                    // Store RI_coeff as a real 3D tensor on the owning rank.
+                    // Cs_data is written in the order:
+                    //   basis_i -> basis_j -> aux_basis_i
+                    // Enviroment keeps it as:
+                    //   value(aux_basis_i, basis_j, basis_i)
+                    // so later code can access the physical dimensions directly.
+                    block.value = tensor<double>(block.n_aux_basis_i,
+                                                 block.n_basis_j,
+                                                 block.n_basis_i);
+                }
+                for (int ibasis_i = 0; ibasis_i < block.n_basis_i; ++ibasis_i) {
+                    for (int ibasis_j = 0; ibasis_j < block.n_basis_j; ++ibasis_j) {
+                        for (int iaux = 0; iaux < block.n_aux_basis_i; ++iaux) {
+                            double value = 0.0;
+                            input >> value;
+                            if (!input) {
+                                std::cerr << "LibBSE[Read]: failed to read RI coeff value "
+                                          << file.path.string() << "\n";
+                                return 1;
+                            }
+                            if (keep_block) {
+                                block.value(iaux, ibasis_j, ibasis_i) = value;
+                            }
+                        }
+                    }
+                }
+                if (keep_block) {
+                    local_RI_coeff.push_back(std::move(block));
+                }
+                ++iblock;
+            }
+        }
+        return 0;
+    }
+
     int read_aims_output(const std::string& directory, Enviroment &Envir, const MpiComm& Comm){
         const fs::path root(directory);
         Envir.dataset_dir = root.string();
@@ -358,16 +451,22 @@ namespace LibBSE
         bcast_matrix_double(Envir.k_point_list, Envir.n_k_point, 3, Comm);
         bcast_vector_int(Envir.map_from_FullBZ_to_IBZ, Comm);
         bcast_KS_band(Envir, Comm);
-
+        
         // Each rank stores only the Coulomb blocks assigned to it.
         Envir.local_coulomb_cut.clear();
         Envir.local_coulomb_mat.clear();
         Envir.local_KS_eigenvector.clear();
+        Envir.local_RI_coeff.clear();
         read_status = read_coulomb_cut(root, Envir, Comm);
         if (read_status != 0) {
             return read_status;
         }
         read_status = read_coulomb_mat(root, Envir, Comm);
+        if (read_status != 0) {
+            return read_status;
+        }
+        MPI_Bcast(&Envir.n_aux_basis, 1, MPI_INT, 0, Comm.LibBSE_MPI_raw());
+        read_status = read_Cs_data(root, Envir, Comm);
         if (read_status != 0) {
             return read_status;
         }
@@ -378,10 +477,12 @@ namespace LibBSE
 
         LibBSE_printf_all(Comm, "stored cut_blocks=%zu"
                                 ", mat_blocks=%zu"
+                                ", RI_blocks=%zu"
                                 ", KS_blocks=%zu"
                                 ", ir_k_point=%d\n",
                                 Envir.local_coulomb_cut.size(),
                                 Envir.local_coulomb_mat.size(),
+                                Envir.local_RI_coeff.size(),
                                 Envir.local_KS_eigenvector.size(),
                                 Envir.ir_k_point);
         LibBSE_printf_root(Comm, "Read band_out: nkpoint=%d, spin=%d, states=%d, basis=%d, E_Fermi=%f\n",
@@ -392,6 +493,8 @@ namespace LibBSE
                                 Envir.E_Fermi);
         LibBSE_printf_root(Comm, "Read struct_out: irkp=%d\n",
                                 Envir.ir_k_point);
+        LibBSE_printf_root(Comm, "Read coulumb_mat: n_aux_basis=%d\n",
+                                Envir.n_aux_basis);
         return 0;
     }
 
@@ -619,11 +722,27 @@ namespace LibBSE
     }
 
     int read_coulomb_cut(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
-        return read_coulomb_group(directory, Envir.local_coulomb_cut, comm, "coulomb_cut_");
+        Envir.n_aux_basis = read_coulomb_group(directory, Envir.local_coulomb_cut, comm, "coulomb_cut_");
+        if(Envir.n_aux_basis > 0){
+            return 0;
+        }
+        else{
+            return 1;
+        }
     }
 
-    int  read_coulomb_mat(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
-        return read_coulomb_group(directory, Envir.local_coulomb_mat, comm, "coulomb_mat_");
+    int read_coulomb_mat(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
+        int ret = read_coulomb_group(directory, Envir.local_coulomb_mat, comm, "coulomb_mat_");
+        if(ret > 0){
+            return 0;
+        }
+        else{
+            return 1;
+        }
+    }
+
+    int read_Cs_data(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
+        return read_RI_coeff_group(directory, Envir.local_RI_coeff, comm, "Cs_data_");
     }
 
     int read_KS_eigenvector(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
