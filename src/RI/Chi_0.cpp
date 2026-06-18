@@ -1,5 +1,12 @@
+/*
+    Chi_0.cpp: 
+    This is the part trying to use LibRI to calculate 
+    chi_0 from Cs_data and KS_eigenvector data. 
+    However, the LibRI use a implementation of time-space method in RPA,
+    But it is not efficient to calculate in BSE.
+    New implementation of chi_0 is in LibBSE_Chi_0.cpp.
+*/
 #include "Chi_0.h"
-
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
