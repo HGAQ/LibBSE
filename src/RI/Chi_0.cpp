@@ -151,16 +151,13 @@ namespace LibBSE{
     }
 
     std::array<std::array<double, 3>, 3> make_lattice(const Enviroment& Enviro){
-        if (Enviro.lattice_vect.size() != 3) {
+        if (Enviro.lattice_vect.row != 3 || Enviro.lattice_vect.col != 3) {
             throw std::runtime_error("LibBSE[Chi0]: lattice vectors are missing");
         }
         std::array<std::array<double, 3>, 3> lat{};
         for (int i = 0; i < 3; ++i) {
-            if (Enviro.lattice_vect[i].size() != 3) {
-                throw std::runtime_error("LibBSE[Chi0]: lattice vector dimension is invalid");
-            }
             for (int j = 0; j < 3; ++j) {
-                lat[i][j] = Enviro.lattice_vect[i][j];
+                lat[i][j] = Enviro.lattice_vect(i, j);
             }
         }
         return lat;
@@ -368,13 +365,13 @@ namespace LibBSE{
 
 
     double phase_angle(const Enviroment& Enviro, const int k_point, const Chi0Cell& R){
-        if (k_point <= 0 || k_point > static_cast<int>(Enviro.k_point_list.size())) {
+        if (k_point <= 0 || k_point > Enviro.k_point_list.row) {
             throw std::runtime_error("LibBSE[Chi0]: k point index is outside k_point_list");
         }
         std::array<double, 3> R_cart{0.0, 0.0, 0.0};
         for (int a = 0; a < 3; ++a) {
             for (int x = 0; x < 3; ++x) {
-                R_cart[x] += static_cast<double>(R[a]) * Enviro.lattice_vect[a][x];
+                R_cart[x] += static_cast<double>(R[a]) * Enviro.lattice_vect(a, x);
             }
         }
         // stru_out stores k vectors in reciprocal-space Cartesian units.
@@ -382,7 +379,7 @@ namespace LibBSE{
         // lattice; no extra TwoPi is needed here.
         double angle = 0.0;
         for (int x = 0; x < 3; ++x) {
-            angle += Enviro.k_point_list[static_cast<std::size_t>(k_point - 1)][x] * R_cart[x];
+            angle += Enviro.k_point_list(k_point - 1, x) * R_cart[x];
         }
         return -angle;
     }

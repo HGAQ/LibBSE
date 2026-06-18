@@ -106,33 +106,17 @@ namespace LibBSE
     }
 
 
-    static void bcast_matrix_double(std::vector<std::vector<double>>& matrix,
+    static void bcast_matrix_double(matrix<double>& mat,
                                     int rows,
                                     int cols,
                                     const MpiComm& comm)
     {
-        std::vector<double> flat(static_cast<std::size_t>(rows * cols), 0.0);
-
-        if (comm.LibBSE_MPI_is_root()) {
-            for (int i = 0; i < rows; ++i) {
-                for (int j = 0; j < cols; ++j) {
-                    flat[static_cast<std::size_t>(i * cols + j)] = matrix[i][j];
-                }
-            }
-        }
-
-        if (!flat.empty()) {
-            MPI_Bcast(flat.data(), rows * cols, MPI_DOUBLE, 0, comm.LibBSE_MPI_raw());
-        }
-
         if (!comm.LibBSE_MPI_is_root()) {
-            matrix.assign(static_cast<std::size_t>(rows),
-                          std::vector<double>(static_cast<std::size_t>(cols), 0.0));
-            for (int i = 0; i < rows; ++i) {
-                for (int j = 0; j < cols; ++j) {
-                    matrix[i][j] = flat[static_cast<std::size_t>(i * cols + j)];
-                }
-            }
+            mat = matrix<double>(rows, cols);
+        }
+
+        if (rows * cols > 0) {
+            MPI_Bcast(mat.matrix_ptr, rows * cols, MPI_DOUBLE, 0, comm.LibBSE_MPI_raw());
         }
     }
 
@@ -495,6 +479,22 @@ namespace LibBSE
                                 Envir.ir_k_point);
         LibBSE_printf_root(Comm, "Read coulumb_mat: n_aux_basis=%d\n",
                                 Envir.n_aux_basis);
+        LibBSE_printf_root(Comm, "Read geometry.in: n_atom=%d\n",
+                                Envir.n_atom);
+        print_matrix(Comm, "lattice_vect", Envir.lattice_vect);
+        print_matrix(Comm, "reciprocal_vect", Envir.reciprocal_vect);
+        LibBSE_printf_root(Comm, "atoms_pos (in Bohr): \n");
+        for (const auto& atom_pos : Envir.atoms_pos) {
+            if (atom_pos.second.size() == 3) {
+                LibBSE_printf_root(Comm, "  %-4s%16.8f%16.8f%16.8f\n",
+                                        atom_pos.first.c_str(),
+                                        atom_pos.second[0],
+                                        atom_pos.second[1],
+                                        atom_pos.second[2]);
+            }
+        }
+        LibBSE_printf_root(Comm, "\n");
+        
         return 0;
     }
 
@@ -551,21 +551,21 @@ namespace LibBSE
             return 1;
         }
 
-        Envir.lattice_vect.assign(3, std::vector<double>(3, 0.0));
-        Envir.reciprocal_vect.assign(3, std::vector<double>(3, 0.0));
+        Envir.lattice_vect = matrix<double>(3, 3);
+        Envir.reciprocal_vect = matrix<double>(3, 3);
         Envir.k_point_dim.assign(3, 0);
-        Envir.k_point_list.clear();
+        Envir.k_point_list = matrix<double>(Envir.n_k_point, 3);
         Envir.map_from_FullBZ_to_IBZ.clear();
 
         // stru_out stores 3 lattice vectors followed by 3 reciprocal vectors.
         for (int i = 0; i < 3; ++i) {
             for (int j = 0; j < 3; ++j) {
-                input >> Envir.lattice_vect[i][j];
+                input >> Envir.lattice_vect(i, j);
             }
         }
         for (int i = 0; i < 3; ++i) {
             for (int j = 0; j < 3; ++j) {
-                input >> Envir.reciprocal_vect[i][j];
+                input >> Envir.reciprocal_vect(i, j);
             }
         }
         for (int i = 0; i < 3; ++i) {
@@ -576,18 +576,14 @@ namespace LibBSE
             return 1;
         }
 
-        // Full BZ k-point list length is the product of k-grid dimensions.
-        Envir.k_point_list.reserve(static_cast<std::size_t>(Envir.n_k_point));
         for (int ik = 0; ik < Envir.n_k_point; ++ik) {
-            std::vector<double> k_point(3, 0.0);
             for (int j = 0; j < 3; ++j) {
-                input >> k_point[j];
+                input >> Envir.k_point_list(ik, j);
             }
             if (!input) {
                 std::cerr << "LibBSE[Read]: failed to read full BZ k-point list " << file << "\n";
                 return 1;
             }
-            Envir.k_point_list.push_back(std::move(k_point));
         }
 
         // Remaining integers map each full-BZ k point to an irreducible-BZ index.
@@ -691,7 +687,7 @@ namespace LibBSE
 
             std::vector<double> pos(3, 0.0);
             if (keyword == "atom_frac") {
-                if (Envir.lattice_vect.size() != 3) {
+                if (Envir.lattice_vect.row != 3 || Envir.lattice_vect.col != 3) {
                     std::cerr << "LibBSE[Read]: lattice vectors are needed before atom_frac positions "
                               << file << "\n";
                     return 1;
@@ -702,7 +698,7 @@ namespace LibBSE
                 const double frac[3] = {x, y, z};
                 for (int ia = 0; ia < 3; ++ia) {
                     for (int ix = 0; ix < 3; ++ix) {
-                        pos[ix] += frac[ia] * Envir.lattice_vect[ia][ix];
+                        pos[ix] += frac[ia] * Envir.lattice_vect(ia, ix);
                     }
                 }
             }

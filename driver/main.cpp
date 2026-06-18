@@ -7,7 +7,7 @@
 #include "../src/io/LibBSE_io.hpp"
 #include "../src/io/Read_aims_output.h"
 #include "../src/mpi/LibBSE_mpi.h"
-#include "../src/RI/Chi_0.h"
+#include "../src/RI/LibBSE_Chi_0.h"
 
 using namespace LibBSE;
 
@@ -55,7 +55,7 @@ int main(int argc, char** argv)
         return 1;
     }
     //start main loop of BSE;
-    if (calculate_chi0(Enviro, LIBBSE_MPI_COMM) != 0) {
+    if (calculate_chi0_BSE(Enviro, LIBBSE_MPI_COMM) != 0) {
         return 1;
     }
 

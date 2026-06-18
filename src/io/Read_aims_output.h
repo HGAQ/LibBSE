@@ -14,6 +14,7 @@
 //Local include
 #include "../mpi/LibBSE_mpi.h"
 #include "../math/Tensor.h"
+#include "../math/Matrix.h"
 #include "LibBSE_io.hpp"
 
 namespace fs = std::filesystem;
@@ -81,10 +82,10 @@ namespace LibBSE{
             int n_aux_basis; //aux basis num
             double E_Fermi; //in Hartree
             //stru_out inputs
-            std::vector<std::vector<double>> lattice_vect;
-            std::vector<std::vector<double>> reciprocal_vect;
+            matrix<double> lattice_vect;
+            matrix<double> reciprocal_vect;
             std::vector<int> k_point_dim;
-            std::vector<std::vector<double>> k_point_list;
+            matrix<double> k_point_list;
             std::vector<int> map_from_FullBZ_to_IBZ;
             std::vector<BandVect> KS_Band;
             int ir_k_point;
