@@ -4,7 +4,7 @@
 #include <string>
 
 namespace LibBSE {
-static bool LibBSE_mpi_initialized = false;
+extern bool LibBSE_mpi_initialized;
 
 class MpiRuntime {
 public:
@@ -32,4 +32,3 @@ private:
 };
 
 } // namespace libbse
-

@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 namespace LibBSE {
+bool LibBSE_mpi_initialized = false;
 
 MpiRuntime::MpiRuntime(int& argc, char**& argv)
 {
@@ -55,4 +56,3 @@ void MpiComm::LibBSE_MPI_barrier() const
 }
 
 } // namespace LibBSE
-

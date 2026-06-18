@@ -81,12 +81,12 @@ clean: CMakeFiles/LibBSE.dir/clean
 CMakeFiles/LibBSE.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles --progress-num=1,2 "Built target LibBSE"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles --progress-num=1,2,3,4 "Built target LibBSE"
 .PHONY : CMakeFiles/LibBSE.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/LibBSE.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles 2
+	$(CMAKE_COMMAND) -E cmake_progress_start /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles 4
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/LibBSE.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles 0
 .PHONY : CMakeFiles/LibBSE.dir/rule

@@ -325,3 +325,133 @@ events:
       
       
 ...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/FindMPI.cmake:1278 (try_compile)"
+      - "/usr/share/cmake/Modules/FindMPI.cmake:1322 (_MPI_try_staged_settings)"
+      - "/usr/share/cmake/Modules/FindMPI.cmake:1645 (_MPI_check_lang_works)"
+      - "CMakeLists.txt:5 (find_package)"
+    description: "The MPI test test_mpi for CXX in mode normal"
+    directories:
+      source: "/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-fAgnbg"
+      binary: "/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-fAgnbg"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "MPI_RESULT_CXX_test_mpi_normal"
+      cached: true
+      stdout: |
+        Change Dir: /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-fAgnbg
+        
+        Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_e46c9/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_e46c9.dir/build.make CMakeFiles/cmTC_e46c9.dir/build
+        gmake[1]: Entering directory '/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-fAgnbg'
+        Building CXX object CMakeFiles/cmTC_e46c9.dir/test_mpi.cpp.o
+        /usr/bin/c++  -isystem /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/include  -o CMakeFiles/cmTC_e46c9.dir/test_mpi.cpp.o -c /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-fAgnbg/test_mpi.cpp
+        Linking CXX executable cmTC_e46c9
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_e46c9.dir/link.txt --verbose=1
+        /usr/bin/c++ -Wl,-rpath -Wl,/nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib -Wl,--enable-new-dtags CMakeFiles/cmTC_e46c9.dir/test_mpi.cpp.o -o cmTC_e46c9  -Wl,-rpath,/nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib/libmpicxx.so /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib/libmpi.so 
+        gmake[1]: Leaving directory '/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-fAgnbg'
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/FindMPI.cmake:1278 (try_compile)"
+      - "/usr/share/cmake/Modules/FindMPI.cmake:1672 (_MPI_try_staged_settings)"
+      - "CMakeLists.txt:5 (find_package)"
+    description: "The MPI test test_mpi for CXX in mode MPICXX"
+    directories:
+      source: "/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-MjK8i2"
+      binary: "/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-MjK8i2"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "MPI_RESULT_CXX_test_mpi_MPICXX"
+      cached: true
+      stdout: |
+        Change Dir: /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-MjK8i2
+        
+        Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_bce85/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_bce85.dir/build.make CMakeFiles/cmTC_bce85.dir/build
+        gmake[1]: Entering directory '/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-MjK8i2'
+        Building CXX object CMakeFiles/cmTC_bce85.dir/test_mpi.cpp.o
+        /usr/bin/c++  -isystem /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/include  -o CMakeFiles/cmTC_bce85.dir/test_mpi.cpp.o -c /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-MjK8i2/test_mpi.cpp
+        Linking CXX executable cmTC_bce85
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_bce85.dir/link.txt --verbose=1
+        /usr/bin/c++ -Wl,-rpath -Wl,/nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib -Wl,--enable-new-dtags CMakeFiles/cmTC_bce85.dir/test_mpi.cpp.o -o cmTC_bce85  -Wl,-rpath,/nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib/libmpicxx.so /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib/libmpi.so 
+        gmake[1]: Leaving directory '/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-MjK8i2'
+        
+      exitCode: 0
+...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/FindMPI.cmake:1278 (try_compile)"
+      - "/usr/share/cmake/Modules/FindMPI.cmake:1322 (_MPI_try_staged_settings)"
+      - "/usr/share/cmake/Modules/FindMPI.cmake:1645 (_MPI_check_lang_works)"
+      - "CMakeLists.txt:5 (find_package)"
+    description: "The MPI test test_mpi for CXX in mode normal"
+    directories:
+      source: "/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-hjanwz"
+      binary: "/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-hjanwz"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "MPI_RESULT_CXX_test_mpi_normal"
+      cached: true
+      stdout: |
+        Change Dir: /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-hjanwz
+        
+        Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_4e6a3/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_4e6a3.dir/build.make CMakeFiles/cmTC_4e6a3.dir/build
+        gmake[1]: Entering directory '/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-hjanwz'
+        Building CXX object CMakeFiles/cmTC_4e6a3.dir/test_mpi.cpp.o
+        /usr/bin/c++  -isystem /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/include  -o CMakeFiles/cmTC_4e6a3.dir/test_mpi.cpp.o -c /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-hjanwz/test_mpi.cpp
+        Linking CXX executable cmTC_4e6a3
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_4e6a3.dir/link.txt --verbose=1
+        /usr/bin/c++ -Wl,-rpath -Wl,/nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib -Wl,--enable-new-dtags CMakeFiles/cmTC_4e6a3.dir/test_mpi.cpp.o -o cmTC_4e6a3  -Wl,-rpath,/nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib/libmpicxx.so /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib/libmpi.so 
+        gmake[1]: Leaving directory '/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-hjanwz'
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/FindMPI.cmake:1278 (try_compile)"
+      - "/usr/share/cmake/Modules/FindMPI.cmake:1672 (_MPI_try_staged_settings)"
+      - "CMakeLists.txt:5 (find_package)"
+    description: "The MPI test test_mpi for CXX in mode MPICXX"
+    directories:
+      source: "/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-XVXnOM"
+      binary: "/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-XVXnOM"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "MPI_RESULT_CXX_test_mpi_MPICXX"
+      cached: true
+      stdout: |
+        Change Dir: /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-XVXnOM
+        
+        Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_ad086/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_ad086.dir/build.make CMakeFiles/cmTC_ad086.dir/build
+        gmake[1]: Entering directory '/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-XVXnOM'
+        Building CXX object CMakeFiles/cmTC_ad086.dir/test_mpi.cpp.o
+        /usr/bin/c++  -isystem /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/include  -o CMakeFiles/cmTC_ad086.dir/test_mpi.cpp.o -c /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-XVXnOM/test_mpi.cpp
+        Linking CXX executable cmTC_ad086
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_ad086.dir/link.txt --verbose=1
+        /usr/bin/c++ -Wl,-rpath -Wl,/nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib -Wl,--enable-new-dtags CMakeFiles/cmTC_ad086.dir/test_mpi.cpp.o -o cmTC_ad086  -Wl,-rpath,/nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib/libmpicxx.so /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib/libmpi.so 
+        gmake[1]: Leaving directory '/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles/CMakeScratch/TryCompile-XVXnOM'
+        
+      exitCode: 0
+...

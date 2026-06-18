@@ -69,31 +69,65 @@ include CMakeFiles/LibBSE.dir/progress.make
 # Include the compile flags for this target's objects.
 include CMakeFiles/LibBSE.dir/flags.make
 
-CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.o: CMakeFiles/LibBSE.dir/flags.make
-CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.o: /nas/longleaf/home/lsr/5_LibBSE/LibBSE/driver/mpi_input.cpp
-CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.o: CMakeFiles/LibBSE.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.o -MF CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.o.d -o CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.o -c /nas/longleaf/home/lsr/5_LibBSE/LibBSE/driver/mpi_input.cpp
+CMakeFiles/LibBSE.dir/driver/main.cpp.o: CMakeFiles/LibBSE.dir/flags.make
+CMakeFiles/LibBSE.dir/driver/main.cpp.o: /nas/longleaf/home/lsr/5_LibBSE/LibBSE/driver/main.cpp
+CMakeFiles/LibBSE.dir/driver/main.cpp.o: CMakeFiles/LibBSE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/LibBSE.dir/driver/main.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/LibBSE.dir/driver/main.cpp.o -MF CMakeFiles/LibBSE.dir/driver/main.cpp.o.d -o CMakeFiles/LibBSE.dir/driver/main.cpp.o -c /nas/longleaf/home/lsr/5_LibBSE/LibBSE/driver/main.cpp
 
-CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /nas/longleaf/home/lsr/5_LibBSE/LibBSE/driver/mpi_input.cpp > CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.i
+CMakeFiles/LibBSE.dir/driver/main.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/LibBSE.dir/driver/main.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /nas/longleaf/home/lsr/5_LibBSE/LibBSE/driver/main.cpp > CMakeFiles/LibBSE.dir/driver/main.cpp.i
 
-CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /nas/longleaf/home/lsr/5_LibBSE/LibBSE/driver/mpi_input.cpp -o CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.s
+CMakeFiles/LibBSE.dir/driver/main.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/LibBSE.dir/driver/main.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /nas/longleaf/home/lsr/5_LibBSE/LibBSE/driver/main.cpp -o CMakeFiles/LibBSE.dir/driver/main.cpp.s
+
+CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.o: CMakeFiles/LibBSE.dir/flags.make
+CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.o: /nas/longleaf/home/lsr/5_LibBSE/LibBSE/src/io/LibBSE_io.cpp
+CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.o: CMakeFiles/LibBSE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.o -MF CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.o.d -o CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.o -c /nas/longleaf/home/lsr/5_LibBSE/LibBSE/src/io/LibBSE_io.cpp
+
+CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /nas/longleaf/home/lsr/5_LibBSE/LibBSE/src/io/LibBSE_io.cpp > CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.i
+
+CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /nas/longleaf/home/lsr/5_LibBSE/LibBSE/src/io/LibBSE_io.cpp -o CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.s
+
+CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.o: CMakeFiles/LibBSE.dir/flags.make
+CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.o: /nas/longleaf/home/lsr/5_LibBSE/LibBSE/src/mpi/LibBSE_mpi.cpp
+CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.o: CMakeFiles/LibBSE.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.o -MF CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.o.d -o CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.o -c /nas/longleaf/home/lsr/5_LibBSE/LibBSE/src/mpi/LibBSE_mpi.cpp
+
+CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /nas/longleaf/home/lsr/5_LibBSE/LibBSE/src/mpi/LibBSE_mpi.cpp > CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.i
+
+CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /nas/longleaf/home/lsr/5_LibBSE/LibBSE/src/mpi/LibBSE_mpi.cpp -o CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.s
 
 # Object files for target LibBSE
 LibBSE_OBJECTS = \
-"CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.o"
+"CMakeFiles/LibBSE.dir/driver/main.cpp.o" \
+"CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.o" \
+"CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.o"
 
 # External object files for target LibBSE
 LibBSE_EXTERNAL_OBJECTS =
 
-LibBSE: CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.o
+LibBSE: CMakeFiles/LibBSE.dir/driver/main.cpp.o
+LibBSE: CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.o
+LibBSE: CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.o
 LibBSE: CMakeFiles/LibBSE.dir/build.make
+LibBSE: /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib/libmpicxx.so
+LibBSE: /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/lib/libmpi.so
 LibBSE: CMakeFiles/LibBSE.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable LibBSE"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/nas/longleaf/home/lsr/5_LibBSE/LibBSE/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Linking CXX executable LibBSE"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/LibBSE.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.

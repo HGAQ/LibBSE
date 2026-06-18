@@ -65,6 +65,16 @@ CMAKE_BINARY_DIR = /nas/longleaf/home/lsr/5_LibBSE/LibBSE/build
 #=============================================================================
 # Targets provided globally by CMake.
 
+# Special rule for the target test
+test:
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --cyan "Running tests..."
+	/usr/bin/ctest --force-new-ctest-process $(ARGS)
+.PHONY : test
+
+# Special rule for the target test
+test/fast: test
+.PHONY : test/fast
+
 # Special rule for the target edit_cache
 edit_cache:
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --cyan "Running CMake cache editor..."
@@ -129,29 +139,77 @@ LibBSE/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/build
 .PHONY : LibBSE/fast
 
-driver/mpi_input.o: driver/mpi_input.cpp.o
-.PHONY : driver/mpi_input.o
+driver/main.o: driver/main.cpp.o
+.PHONY : driver/main.o
 
 # target to build an object file
-driver/mpi_input.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.o
-.PHONY : driver/mpi_input.cpp.o
+driver/main.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/driver/main.cpp.o
+.PHONY : driver/main.cpp.o
 
-driver/mpi_input.i: driver/mpi_input.cpp.i
-.PHONY : driver/mpi_input.i
+driver/main.i: driver/main.cpp.i
+.PHONY : driver/main.i
 
 # target to preprocess a source file
-driver/mpi_input.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.i
-.PHONY : driver/mpi_input.cpp.i
+driver/main.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/driver/main.cpp.i
+.PHONY : driver/main.cpp.i
 
-driver/mpi_input.s: driver/mpi_input.cpp.s
-.PHONY : driver/mpi_input.s
+driver/main.s: driver/main.cpp.s
+.PHONY : driver/main.s
 
 # target to generate assembly for a file
-driver/mpi_input.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/driver/mpi_input.cpp.s
-.PHONY : driver/mpi_input.cpp.s
+driver/main.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/driver/main.cpp.s
+.PHONY : driver/main.cpp.s
+
+src/io/LibBSE_io.o: src/io/LibBSE_io.cpp.o
+.PHONY : src/io/LibBSE_io.o
+
+# target to build an object file
+src/io/LibBSE_io.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.o
+.PHONY : src/io/LibBSE_io.cpp.o
+
+src/io/LibBSE_io.i: src/io/LibBSE_io.cpp.i
+.PHONY : src/io/LibBSE_io.i
+
+# target to preprocess a source file
+src/io/LibBSE_io.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.i
+.PHONY : src/io/LibBSE_io.cpp.i
+
+src/io/LibBSE_io.s: src/io/LibBSE_io.cpp.s
+.PHONY : src/io/LibBSE_io.s
+
+# target to generate assembly for a file
+src/io/LibBSE_io.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/src/io/LibBSE_io.cpp.s
+.PHONY : src/io/LibBSE_io.cpp.s
+
+src/mpi/LibBSE_mpi.o: src/mpi/LibBSE_mpi.cpp.o
+.PHONY : src/mpi/LibBSE_mpi.o
+
+# target to build an object file
+src/mpi/LibBSE_mpi.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.o
+.PHONY : src/mpi/LibBSE_mpi.cpp.o
+
+src/mpi/LibBSE_mpi.i: src/mpi/LibBSE_mpi.cpp.i
+.PHONY : src/mpi/LibBSE_mpi.i
+
+# target to preprocess a source file
+src/mpi/LibBSE_mpi.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.i
+.PHONY : src/mpi/LibBSE_mpi.cpp.i
+
+src/mpi/LibBSE_mpi.s: src/mpi/LibBSE_mpi.cpp.s
+.PHONY : src/mpi/LibBSE_mpi.s
+
+# target to generate assembly for a file
+src/mpi/LibBSE_mpi.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/LibBSE.dir/build.make CMakeFiles/LibBSE.dir/src/mpi/LibBSE_mpi.cpp.s
+.PHONY : src/mpi/LibBSE_mpi.cpp.s
 
 # Help Target
 help:
@@ -161,10 +219,17 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
+	@echo "... test"
 	@echo "... LibBSE"
-	@echo "... driver/mpi_input.o"
-	@echo "... driver/mpi_input.i"
-	@echo "... driver/mpi_input.s"
+	@echo "... driver/main.o"
+	@echo "... driver/main.i"
+	@echo "... driver/main.s"
+	@echo "... src/io/LibBSE_io.o"
+	@echo "... src/io/LibBSE_io.i"
+	@echo "... src/io/LibBSE_io.s"
+	@echo "... src/mpi/LibBSE_mpi.o"
+	@echo "... src/mpi/LibBSE_mpi.i"
+	@echo "... src/mpi/LibBSE_mpi.s"
 .PHONY : help
 
 

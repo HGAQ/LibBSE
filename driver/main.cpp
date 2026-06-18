@@ -14,7 +14,7 @@ int LibBSE_initialize(int argc, char **argv){
         return 2;
     }
     else{    
-        if(!LibBSE_io_init(LIBBSE_MPI_COMM)){
+        if(LibBSE_io_init(LIBBSE_MPI_COMM) != 0){
             return 2;
         }
         else{
@@ -37,13 +37,12 @@ int LibBSE_finalized(){
 int main(int argc, char** argv)
 {
     MpiRuntime LibBSE_MPI(argc, argv);
-    if(!LibBSE_initialize(argc, argv)){
+    if(LibBSE_initialize(argc, argv) != 0){
         return 1;
     }
     //
-    if(!LibBSE_finalized()){
+    if(LibBSE_finalized() != 0){
         return 1;
     }
     return 0;
 }
-

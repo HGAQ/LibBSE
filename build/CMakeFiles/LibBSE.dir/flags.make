@@ -4,7 +4,7 @@
 # compile CXX with /usr/bin/c++
 CXX_DEFINES = 
 
-CXX_INCLUDES = 
+CXX_INCLUDES = -I/nas/longleaf/home/lsr/5_LibBSE/LibBSE/include -isystem /nas/sycamore/apps/mvapich/4.0/intel_2024.2.1/include
 
 CXX_FLAGS = 
 

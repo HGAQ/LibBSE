@@ -1,9 +1,16 @@
 #include "../../include/io/LibBSE_io.hpp"
 
-#include <fstream>
+#include <cstdio>
 #include <mpi.h>
 
-int LibBSE::LibBSE_io_init(MpiComm Mpi_COMM, bool redirect_stdout = false, const char *redirect_path = "LibBSE.out"){
+namespace LibBSE {
+std::ofstream ofs;
+std::streambuf *cout_buf_old = nullptr;
+bool LibBSE_io_initialized = false;
+FILE *redirect_file = nullptr;
+}
+
+int LibBSE::LibBSE_io_init(MpiComm Mpi_COMM, bool redirect_stdout, const char *redirect_path){
     std::string s_fn(redirect_path);
     if (redirect_stdout && s_fn == "")
     {
@@ -13,7 +20,7 @@ int LibBSE::LibBSE_io_init(MpiComm Mpi_COMM, bool redirect_stdout = false, const
     {
         // Rank 0 touches the output file
         Mpi_COMM.LibBSE_MPI_barrier();
-        if (Mpi_COMM.LibBSE_MPI_is_root() == 0)
+        if (Mpi_COMM.LibBSE_MPI_is_root())
         {
             std::ofstream ofs(redirect_path);
             ofs.close();
@@ -30,6 +37,7 @@ int LibBSE::LibBSE_io_init(MpiComm Mpi_COMM, bool redirect_stdout = false, const
         redirect_file = fopen(redirect_path, "a");
     }
     LibBSE_io_initialized = true;
+    return 0;
 }
 
 void LibBSE::LibBSE_io_finalized(){

@@ -1,17 +1,20 @@
 #pragma once
 //Global include
+#include <cstdio>
 #include <fstream>
+#include <iostream>
 #include <mpi.h>
+#include <utility>
 
 //Local include
 #include "../mpi/LibBSE_mpi.h"
 
 namespace LibBSE{
 
-    static std::ofstream ofs;
-    static std::streambuf *cout_buf_old = nullptr;
-    static bool LibBSE_io_initialized = false;
-    FILE *redirect_file = nullptr;
+    extern std::ofstream ofs;
+    extern std::streambuf *cout_buf_old;
+    extern bool LibBSE_io_initialized;
+    extern FILE *redirect_file;
 
     int LibBSE_io_init(MpiComm Mpi_COMM, bool redirect_stdout = false, const char *redirect_path = "LibBSE.out");
     void LibBSE_io_finalized();
@@ -46,7 +49,7 @@ namespace LibBSE{
     template <typename... Args>
     void LibBSE_printf_root(LibBSE::MpiComm MPI_COMM, const char* s, Args&&... args) noexcept
     {
-        if (MPI_COMM.LibBSE_MPI_is_root() == 0)
+        if (MPI_COMM.LibBSE_MPI_is_root())
         {
             LibBSE_printf(s, std::forward<Args>(args)...);
         }
@@ -59,9 +62,10 @@ namespace LibBSE{
         {
             if (MPI_COMM.LibBSE_MPI_rank() == i)
             {
-                LibBSE_printf("Rank = ", i, ": ", s, std::forward<Args>(args)...);
+                LibBSE_printf("Rank = %d: ", i);
+                LibBSE_printf(s, std::forward<Args>(args)...);
             }
-            MPI_Barrier(mpi_comm_global);
+            MPI_COMM.LibBSE_MPI_barrier();
         }
     }
     
