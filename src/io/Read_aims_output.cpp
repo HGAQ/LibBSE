@@ -305,10 +305,12 @@ namespace LibBSE
     }
 
     int read_RI_coeff_group(const fs::path directory,
-                            std::vector<RIBlock>& local_RI_coeff,
+                            Enviroment& Envir,
                             const MpiComm& comm,
                             const std::string& prefix){
         const std::vector<IndexedFile> files = find_indexed_files(directory, prefix, ".txt");
+        std::vector<int> local_basis_atom(static_cast<std::size_t>(Envir.n_atom), 0);
+        std::vector<int> local_aux_basis_atom(static_cast<std::size_t>(Envir.n_atom), 0);
 
         for (int ifile = 0; ifile < files.size(); ++ifile) {
             const IndexedFile& file = files[ifile];
@@ -330,6 +332,11 @@ namespace LibBSE
                 std::cerr << "LibBSE[Read]: failed to read RI coeff header " << file.path.string() << "\n";
                 return 1;
             }
+            if (n_atom != Envir.n_atom) {
+                std::cerr << "LibBSE[Read]: RI coeff atom count does not match geometry.in "
+                          << file.path.string() << "\n";
+                return 1;
+            }
 
             // Cs_data starts with n_atom and n_cell, but the file stores the actual
             // (i_atom,j_atom,R) blocks sequentially.  Some datasets do not contain
@@ -338,8 +345,10 @@ namespace LibBSE
             while (true) {
                 RIBlock block;
                 block.file_index = file.index;
+                int i_atom_file = 0;
+                int j_atom_file = 0;
 
-                if (!(input >> block.i_atom >> block.j_atom
+                if (!(input >> i_atom_file >> j_atom_file
                             >> block.n_1 >> block.n_2 >> block.n_3
                             >> block.n_basis_i >> block.n_basis_j >> block.n_aux_basis_i)) {
                     if (input.eof()) {
@@ -350,27 +359,36 @@ namespace LibBSE
                     return 1;
                 }
 
+                // FHI-aims Cs_data atom ids are 1-based.  Inside LibBSE,
+                // geometry.in atoms and vector offsets are 0-based.
+                block.i_atom = i_atom_file - 1;
+                block.j_atom = j_atom_file - 1;
+                if (block.i_atom < 0 || block.i_atom >= Envir.n_atom
+                 || block.j_atom < 0 || block.j_atom >= Envir.n_atom) {
+                    std::cerr << "LibBSE[Read]: RI coeff atom index is outside geometry.in "
+                              << file.path.string() << "\n";
+                    return 1;
+                }
+
                 const int block_size =
                     block.n_basis_i * block.n_basis_j * block.n_aux_basis_i;
                 if (block_size <= 0 || !input) {
                     std::cerr << "LibBSE[Read]: invalid RI coeff block " << file.path.string() << "\n";
                     return 1;
                 }
+                local_basis_atom[static_cast<std::size_t>(block.i_atom)] =
+                    std::max(local_basis_atom[static_cast<std::size_t>(block.i_atom)], block.n_basis_i);
+                local_basis_atom[static_cast<std::size_t>(block.j_atom)] =
+                    std::max(local_basis_atom[static_cast<std::size_t>(block.j_atom)], block.n_basis_j);
+                local_aux_basis_atom[static_cast<std::size_t>(block.i_atom)] =
+                    std::max(local_aux_basis_atom[static_cast<std::size_t>(block.i_atom)], block.n_aux_basis_i);
 
                 // Split blocks only inside the rank group assigned to this file.
                 // If the file has one owner rank, that rank keeps all blocks.
                 const bool keep_block =
                     (iblock % assignment.rank_count == assignment.local_rank);
                 if (keep_block) {
-                    // Store RI_coeff as a real 3D tensor on the owning rank.
-                    // Cs_data is written in the order:
-                    //   basis_i -> basis_j -> aux_basis_i
-                    // Enviroment keeps it as:
-                    //   value(aux_basis_i, basis_j, basis_i)
-                    // so later code can access the physical dimensions directly.
-                    block.value = tensor<double>(block.n_aux_basis_i,
-                                                 block.n_basis_j,
-                                                 block.n_basis_i);
+                    block.value= matrix<double>(1, block.n_aux_basis_i * block.n_basis_j * block.n_basis_i);
                 }
                 for (int ibasis_i = 0; ibasis_i < block.n_basis_i; ++ibasis_i) {
                     for (int ibasis_j = 0; ibasis_j < block.n_basis_j; ++ibasis_j) {
@@ -383,15 +401,35 @@ namespace LibBSE
                                 return 1;
                             }
                             if (keep_block) {
-                                block.value(iaux, ibasis_j, ibasis_i) = value;
+                                block.value(0, iaux * block.n_basis_i * block.n_basis_j 
+                                          + ibasis_j * block.n_basis_i 
+                                          + ibasis_i) = value;
                             }
                         }
                     }
                 }
                 if (keep_block) {
-                    local_RI_coeff.push_back(std::move(block));
+                    Envir.local_RI_coeff.push_back(std::move(block));
                 }
                 ++iblock;
+            }
+        }
+
+        // Every rank needs atom-resolved sizes before k-space RI_coeff can be
+        // allocated.  Each rank only reads part of Cs_data, so merge by max.
+        Envir.n_basis_atom.assign(static_cast<std::size_t>(Envir.n_atom), 0);
+        Envir.n_aux_basis_atom.assign(static_cast<std::size_t>(Envir.n_atom), 0);
+        if (Envir.n_atom > 0) {
+            MPI_Allreduce(local_basis_atom.data(), Envir.n_basis_atom.data(),
+                          Envir.n_atom, MPI_INT, MPI_MAX, comm.LibBSE_MPI_raw());
+            MPI_Allreduce(local_aux_basis_atom.data(), Envir.n_aux_basis_atom.data(),
+                          Envir.n_atom, MPI_INT, MPI_MAX, comm.LibBSE_MPI_raw());
+        }
+        for (int iatom = 0; iatom < Envir.n_atom; ++iatom) {
+            if (Envir.n_basis_atom[static_cast<std::size_t>(iatom)] <= 0
+             || Envir.n_aux_basis_atom[static_cast<std::size_t>(iatom)] <= 0) {
+                std::cerr << "LibBSE[Read]: missing atom basis metadata in RI coeff blocks\n";
+                return 1;
             }
         }
         return 0;
@@ -738,7 +776,7 @@ namespace LibBSE
     }
 
     int read_Cs_data(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
-        return read_RI_coeff_group(directory, Envir.local_RI_coeff, comm, "Cs_data_");
+        return read_RI_coeff_group(directory, Envir, comm, "Cs_data_");
     }
 
     int read_KS_eigenvector(const fs::path directory, Enviroment& Envir, const MpiComm& comm){

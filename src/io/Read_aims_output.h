@@ -66,7 +66,8 @@ namespace LibBSE{
         int i_atom = 0, j_atom = 0;
         int n_1 = 0, n_2 = 0, n_3 = 0;
         int n_basis_i = 0, n_basis_j = 0, n_aux_basis_i = 0;
-        tensor<double> value;
+        matrix<double> value;
+        matrix<double> angle_vect;
     };
 
     struct Enviroment{
@@ -99,8 +100,11 @@ namespace LibBSE{
             std::vector<CoulombBlock> local_coulomb_mat; // Coulomb_mat [i_kpoint][n_aux_basis][n_aux_basis]
             //RI inputs
             std::vector<RIBlock> local_RI_coeff; // RI_coeff [ncell] [n_aux_basis_i] [n_basis_j] [n_basis_i]
+            std::vector<int> n_basis_atom; // n_basis_atom[i_atom]
+            std::vector<int> n_aux_basis_atom; // n_aux_basis_atom[i_atom]
             //KS_eigvect inputs
             std::vector<KSBlock> local_KS_eigenvector;
+            std::vector<int> recorded_k_points;
     };
     
     struct IndexedFile {

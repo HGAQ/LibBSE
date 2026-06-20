@@ -1,12 +1,14 @@
 #pragma once
 #include <cassert>
+#include <complex>
 #include <iomanip>
 #include <ostream>
 #include <fstream>
 #include <sstream>
+#include <type_traits>
 #include <vector>
 #include "../io/LibBSE_io.hpp"
-
+#include "../interface/Blas_Interface.h"
 
 namespace LibBSE{
     //Matrix: only for 2 dimension case.
@@ -21,7 +23,7 @@ namespace LibBSE{
         row(0), col(0), size(0), matrix_ptr(nullptr){
         }
 	    matrix( const int nrows, const int ncols): 
-        row(nrows), col(ncols), matrix_ptr(nullptr){
+        row(nrows), col(ncols), size(0), matrix_ptr(nullptr){
             if(row && col){
                 size = row * col;
 	        	matrix_ptr = new T[size];
@@ -29,7 +31,12 @@ namespace LibBSE{
         }
 	    matrix( const matrix &m ): 
         row(m.row), col(m.col), size(m.size), matrix_ptr(nullptr){
-            matrix_ptr = new T[size];
+            if(size){
+                matrix_ptr = new T[size];
+                for(int i = 0; i < size; ++i){
+                    matrix_ptr[i] = m.matrix_ptr[i];
+                }
+            }
         }
 	    matrix( matrix && m ):
         row(m.row), col(m.col), size(m.size), matrix_ptr(m.matrix_ptr){
@@ -54,8 +61,21 @@ namespace LibBSE{
 	    void operator-=(const T &s);
 	    void operator-=(const matrix &m);
 	    bool operator==(const matrix &m);
-
+        bool is_empty();
+        void empty();
     };
+    
+    template<typename T>
+    struct is_blas_matrix_value : std::false_type {};
+    template<>
+    struct is_blas_matrix_value<float> : std::true_type {};
+    template<>
+    struct is_blas_matrix_value<double> : std::true_type {};
+    template<>
+    struct is_blas_matrix_value<std::complex<float>> : std::true_type {};
+    template<>
+    struct is_blas_matrix_value<std::complex<double>> : std::true_type {};
+
     template<typename T>
     matrix<T> operator+(const matrix<T> &m1, const matrix<T> &m2);
     template<typename T>
@@ -69,8 +89,11 @@ namespace LibBSE{
     //use LibBSE_print
     template<typename T>
     void print_matrix(LibBSE::MpiComm MPI_COMM, const char *name, const matrix<T> &mat);
-
-
+    //complex operater
+    template<typename T>
+    matrix<T>  transpose_times(const matrix<T> &m1, const matrix<T> &m2, const char T1, const char T2);
+    template<typename T>
+    void zeros(matrix<T>& mat);
 
     // Copy assignment: keep the matrix shape and data exactly the same as m.
     // The old buffer is reused only when the element count is unchanged.
@@ -203,6 +226,24 @@ namespace LibBSE{
         return true;
     }
 
+    template<typename T>
+    bool matrix<T>::is_empty(){
+        if(row == 0 || col == 0 || size == 0){
+            return true;
+        }
+        return false;
+    }
+
+    template<typename T>
+    void matrix<T>::empty(){
+        delete[] matrix_ptr;
+        row = 0;
+        col = 0;
+        size = 0;
+        matrix_ptr = nullptr;
+    }
+
+
     // Matrix + matrix.  A new matrix is returned; inputs are not changed.
     template<typename T>
     matrix<T> operator+(const matrix<T> &m1, const matrix<T> &m2){
@@ -236,13 +277,32 @@ namespace LibBSE{
         assert(m1.col == m2.row);
 
         matrix<T> result(m1.row, m2.col);
-        for(int i = 0; i < m1.row; ++i){
-            for(int j = 0; j < m2.col; ++j){
-                T sum = T();
-                for(int k = 0; k < m1.col; ++k){
-                    sum += m1(i, k) * m2(k, j);
+        if(result.size == 0){
+            return result;
+        }
+        if(m1.col == 0){
+            for(int i = 0; i < result.size; ++i){
+                result.matrix_ptr[i] = T();
+            }
+            return result;
+        }
+
+        if constexpr (is_blas_matrix_value<T>::value){
+            Blas_Interface::gemm('N', 'N',
+                                 m1.row, m2.col, m1.col,
+                                 T(1), m1.matrix_ptr, m1.col,
+                                 m2.matrix_ptr, m2.col,
+                                 T(0), result.matrix_ptr, result.col);
+        }
+        else{
+            for(int i = 0; i < m1.row; ++i){
+                for(int j = 0; j < m2.col; ++j){
+                    T sum = T();
+                    for(int k = 0; k < m1.col; ++k){
+                        sum += m1(i, k) * m2(k, j);
+                    }
+                    result(i, j) = sum;
                 }
-                result(i, j) = sum;
             }
         }
         return result;
@@ -268,6 +328,13 @@ namespace LibBSE{
         return result;
     }
 
+    template<typename T>
+    void zeros(matrix<T>& mat){
+        for(int i = 0; i < mat.size; ++i){
+            mat.matrix_ptr[i] = 0.0;
+        }
+    }
+
     // Print matrix on root rank only.  ostream keeps this function generic for
     // int, double, complex<double>, and other types with operator<<.
     template<typename T>
@@ -278,7 +345,7 @@ namespace LibBSE{
         for(int i = 0; i < mat.row; ++i){
             os << "  ";
             for(int j = 0; j < mat.col; ++j){
-                os << std::setw(16) << mat(i, j);
+                os << std::setw(16) << std::fixed << std::setprecision(10) << mat(i, j);
             }
             os << "\n";
         }
@@ -287,4 +354,42 @@ namespace LibBSE{
         LibBSE_printf_root(MPI_COMM, "%s", os.str().c_str());
     }
 
+    template<typename T>
+    matrix<T> transpose_times(const matrix<T> &m1, const matrix<T> &m2, const char T1, const char T2){
+        assert((T1 == 'N' || T1 == 'T') && (T2 == 'N' || T2 == 'T'));
+
+        int m  = (T1 == 'T') ? m1.col : m1.row;
+        int k1 = (T1 == 'T') ? m1.row : m1.col;
+        int k2 = (T2 == 'T') ? m2.col : m2.row;
+        int n  = (T2 == 'T') ? m2.row : m2.col;
+
+        assert(k1 == k2);
+        int k = k1;
+
+        matrix<T> result(m, n);
+        if (m == 0 || n == 0 || k == 0) return result;
+
+        if constexpr (is_blas_matrix_value<T>::value) {
+            Blas_Interface::gemm(T1, T2, m, n, k, 
+                                 T(1), m1.matrix_ptr, m1.col, 
+                                       m2.matrix_ptr, m2.col, 
+                                 T(0), result.matrix_ptr, result.col);
+        } 
+        else {
+            auto get_m1 = [&](int r, int c) { return (T1 == 'T') ? m1(c, r) : m1(r, c); };
+            auto get_m2 = [&](int r, int c) { return (T2 == 'T') ? m2(c, r) : m2(r, c); };
+
+            for (int i = 0; i < m; ++i) {
+                for (int j = 0; j < n; ++j) {
+                    T sum = 0;
+                    for (int l = 0; l < k; ++l) {
+                        sum += get_m1(i, l) * get_m2(l, j);
+                    }
+                    result(i, j) = sum; 
+                }
+            }
+        }
+
+        return result;
+    }       
 }
