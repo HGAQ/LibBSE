@@ -269,6 +269,7 @@ namespace LibBSE
             //   i_k_point
             //   (real imag) for every spin/state/basis value
             // so keep reading k-point sections until EOF.
+            int count_kpoint_this_file = 0;
             const int expected_blocks = Envir.n_band_spin * Envir.n_band_state;
             while (true) {
                 int i_k_point = 0;
@@ -285,14 +286,23 @@ namespace LibBSE
                               << file.path.string() << "\n";
                     return 1;
                 }
-
                 // One KSBlock stores the complete eigenvector matrix for this
                 // k point.  File order is basis first, then state/spin:
                 //   c(i_basis, i_state, i_spin).
+                // Split blocks only inside the rank group assigned to this file.
+                // If the file has one owner rank, that rank keeps all blocks.
                 KSBlock block;
                 block.file_index = file.index;
                 block.i_k_point = i_k_point;
-                block.value = matrix<std::complex<double>>(Envir.n_basis, expected_blocks);
+                
+                // Test if we need to store this block in this rank.
+                // Split blocks only inside the rank group assigned to this file.
+                // If the file has one owner rank, that rank keeps all blocks.
+                const bool keep_block =
+                    (count_kpoint_this_file % assignment.rank_count == assignment.local_rank);
+                if (keep_block) {
+                    block.value = matrix<std::complex<double>>(Envir.n_basis, expected_blocks);
+                }
                 for (int iblock = 0; iblock < expected_blocks; ++iblock) {
                     for (int ibasis = 0; ibasis < Envir.n_basis; ++ibasis) {
                         double real = 0.0;
@@ -303,19 +313,25 @@ namespace LibBSE
                                       << file.path.string() << "\n";
                             return 1;
                         }
-                        block.value(ibasis, iblock) =
-                            std::complex<double>(real, imag);
+                        if (keep_block) {
+                            block.value(ibasis, iblock) =
+                                std::complex<double>(real, imag);
+                        }
                     }
                 }
-                local_KS_eigenvector.push_back(std::move(block));
-                if (std::find(recorded_k_points.begin(), recorded_k_points.end(), i_k_point)
-                    == recorded_k_points.end()) {
-                    recorded_k_points.push_back(i_k_point);
+                if (keep_block) {
+                    local_KS_eigenvector.push_back(std::move(block));
+                    //record each which kpoint this core is stored.
+                    if (std::find(recorded_k_points.begin(), recorded_k_points.end(), i_k_point)
+                        == recorded_k_points.end()) {
+                        recorded_k_points.push_back(i_k_point);
+                    }
                 }
+                count_kpoint_this_file ++;
             }
         }
         // Keep the list deterministic for later loops and debug output.
-        std::sort(recorded_k_points.begin(), recorded_k_points.end());
+        // std::sort(recorded_k_points.begin(), recorded_k_points.end());
         return 0;
     }
 
@@ -416,9 +432,9 @@ namespace LibBSE
                                 return 1;
                             }
                             if (keep_block) {
-                                block.value(0, iaux * block.n_basis_i * block.n_basis_j 
-                                          + ibasis_j * block.n_basis_i 
-                                          + ibasis_i) = value;
+                                block.value(0, ibasis_i * block.n_aux_basis_i * block.n_basis_j
+                                          + iaux * block.n_basis_j 
+                                          + ibasis_j) = value;
                             }
                         }
                     }

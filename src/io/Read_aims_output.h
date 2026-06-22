@@ -56,7 +56,8 @@ namespace LibBSE{
     struct KSBlock {
         int file_index = -1;
         int i_k_point = 0;
-        // value(i_basis, (i_spin - 1) * n_band_state + (i_state - 1))
+        //in the file the KSeigenvect is listed as : [i_basis_i] [i_state] [i_spin] (C order)
+        // here we store in the order of: [i_basis_i] [i_state * i_spin]
         matrix<std::complex<double>> value;
     };
 
@@ -65,6 +66,8 @@ namespace LibBSE{
         int i_atom = 0, j_atom = 0;
         int n_1 = 0, n_2 = 0, n_3 = 0;
         int n_basis_i = 0, n_basis_j = 0, n_aux_basis_i = 0;
+        // in the file the RIvalue is listed as : [i_basis_i] [i_basis_j] [i_aux_basis_i] (C order)
+        // here we transpose in the order of: [i_basis_i] [i_aux_basis_i] [i_basis_j] and flatten it.
         matrix<double> value;
         matrix<double> angle_vect;
     };
@@ -90,20 +93,25 @@ namespace LibBSE{
             std::vector<BandVect> KS_Band;
             int ir_k_point;
             //vxc_out inputs
+            
             std::vector<std::vector<std::vector<double>>> vxc; // vxc[i_kpoint] [i_spin] [i_state]
             //geometry.in inputs
+
             std::vector<AtomPos> atoms_pos;
             int n_atom;
             //coulomb inputs
+
             std::vector<CoulombBlock> local_coulomb_cut; // Coulomb_cut [i_kpoint][n_aux_basis][n_aux_basis]
             std::vector<CoulombBlock> local_coulomb_mat; // Coulomb_mat [i_kpoint][n_aux_basis][n_aux_basis]
             //RI inputs
-            std::vector<RIBlock> local_RI_coeff; // RI_coeff [ncell] [n_aux_basis_i] [n_basis_j] [n_basis_i]
+
+            std::vector<RIBlock> local_RI_coeff; // RI_coeff [ncell] ([n_basis_i] [n_aux_basis_i] [n_basis_j]).flatten 
             std::vector<int> n_basis_atom; // n_basis_atom[i_atom]
             std::vector<int> n_aux_basis_atom; // n_aux_basis_atom[i_atom]
             //KS_eigvect inputs
-            std::vector<KSBlock> local_KS_eigenvector;
-            std::vector<int> recorded_k_points;
+
+            std::vector<KSBlock> local_KS_eigenvector; // [n_kpoint] [n_basis_i] ([n_state] [n_spin]).flatten
+            std::vector<int> recorded_k_points;// attention that this is record in Fortran index, start with 1.
     };
     
     struct IndexedFile {

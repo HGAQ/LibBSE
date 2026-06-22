@@ -94,7 +94,12 @@ namespace LibBSE{
     template<typename T>
     matrix<T>  transpose_times(const matrix<T> &m1, const matrix<T> &m2, const char T1, const char T2);
     template<typename T>
+    matrix<T>  pointer_times(T* &m1, const matrix<T> &m2, const char T1, const char T2, int col1, int row1);
+
+    template<typename T>
     void zeros(matrix<T>& mat);
+    template<typename T>
+    std::vector<T*>  split(const matrix<T> &m1, std::vector<int> idx);
 
     // Copy assignment: keep the matrix shape and data exactly the same as m.
     // The old buffer is reused only when the element count is unchanged.
@@ -405,4 +410,72 @@ namespace LibBSE{
 
         return result;
     }       
+
+    template<typename T>
+    matrix<T> pointer_times(T* &m1, const matrix<T> &m2, const char T1, const char T2, int col1, int row1){
+        assert((T1 == 'N' || T1 == 'T') && (T2 == 'N' || T2 == 'T'));
+        assert(row1 >= 0 && col1 >= 0);
+        assert(m1 != nullptr || row1 * col1 == 0);
+
+        // m1 is a row-major matrix view with shape row1 x col1.
+        // Only the shape is supplied here; pointer_times does not own m1.
+        int m  = (T1 == 'T') ? col1 : row1;
+        int k1 = (T1 == 'T') ? row1 : col1;
+        int k2 = (T2 == 'T') ? m2.col : m2.row;
+        int n  = (T2 == 'T') ? m2.row : m2.col;
+
+        assert(k1 == k2);
+        int k = k1;
+
+        matrix<T> result(m, n);
+        if(m == 0 || n == 0 || k == 0){
+            return result;
+        }
+
+        if constexpr (is_blas_matrix_value<T>::value) {
+            // Blas_Interface::gemm accepts row-major leading dimensions.
+            // For m1 the leading dimension is the original pointer-view col1.
+            Blas_Interface::gemm(T1, T2, m, n, k,
+                                 T(1), m1, col1,
+                                       m2.matrix_ptr, m2.col,
+                                 T(0), result.matrix_ptr, result.col);
+        }
+        else {
+            auto get_m1 = [&](int r, int c) {
+                return (T1 == 'T') ? m1[c * col1 + r] : m1[r * col1 + c];
+            };
+            auto get_m2 = [&](int r, int c) {
+                return (T2 == 'T') ? m2(c, r) : m2(r, c);
+            };
+
+            for(int i = 0; i < m; ++i){
+                for(int j = 0; j < n; ++j){
+                    T sum = 0;
+                    for(int l = 0; l < k; ++l){
+                        sum += get_m1(i, l) * get_m2(l, j);
+                    }
+                    result(i, j) = sum;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // Try to split the vector to various parts, base on first_index, didn't return matrix vector 
+    // but the matrix ptr of the first index
+    // e.g. :
+    // m1: 12*12, idx: {0, 2, 10}
+    // return: vector{ *[0][0], *[2][0], *[10][0]}
+    template<typename T>
+    std::vector<T*>  split(const matrix<T> &m1, std::vector<int> idx){
+        std::vector<T*> ptrs;
+        ptrs.reserve(idx.size());
+        for(int first_row : idx){
+            assert(first_row >= 0);
+            assert(first_row < m1.row);
+            ptrs.emplace_back(m1.matrix_ptr + first_row * m1.col);
+        }
+        return ptrs;
+    }
 }

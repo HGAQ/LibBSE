@@ -68,49 +68,142 @@ namespace LibBSE{
     void write_RI_coeff_k_real_debug(const Enviroment& Envir,
                                      const MpiComm& Comm,
                                      const std::vector<matrix<double>>& RI_coeff_k_real){
+        int type = 1;// 0 is style that easy to understand by human, 1 is for compare w/ FHI-aims
         const std::filesystem::path debug_dir =
             std::filesystem::current_path() / "RI_coeff_k_debug";
         std::filesystem::create_directories(debug_dir);
         const int mpi_rank = Comm.LibBSE_MPI_rank();
 
-        for(int i_atom = 0; i_atom < Envir.n_atom; ++i_atom){
-            for(int j_atom = 0; j_atom < Envir.n_atom; ++j_atom){
-                const int block_index = i_atom * Envir.n_atom + j_atom;
-                const matrix<double>& block =
-                    RI_coeff_k_real[static_cast<std::size_t>(block_index)];
-                if(block.size == 0){
-                    continue;
+        switch (type){
+        case 0:
+            for(int i_atom = 0; i_atom < Envir.n_atom; ++i_atom){
+                for(int j_atom = 0; j_atom < Envir.n_atom; ++j_atom){
+                    const int block_index = i_atom * Envir.n_atom + j_atom;
+                    const matrix<double>& block =
+                        RI_coeff_k_real[static_cast<std::size_t>(block_index)];
+                    if(block.size == 0){
+                        continue;
+                    }
+
+                    const std::filesystem::path file =
+                        debug_dir / ("RI_coeff_k_real_rank_"
+                                   + std::to_string(mpi_rank)
+                                   + "_atom_"
+                                   + std::to_string(i_atom) + "_"
+                                   + std::to_string(j_atom) + ".txt");
+                    std::ofstream output(file);
+                    output << "# RI_coeff_k_real\n";
+                    output << "# rank " << mpi_rank << "\n";
+                    output << "# i_atom " << i_atom << " j_atom " << j_atom << "\n";
+                    output << "# rows: k_point, columns: basis_i * aux_i * basis_j\n";
+                    output << "# local_n_kpoint " << block.row << " n_value " << block.col << "\n";
+                    for(int local_ik = 0; local_ik < block.row; ++local_ik){
+                        // The matrix row is local to recorded_k_points, not the
+                        // global 0..n_kpoint-1 row anymore.
+                        output << "i_kpoint = "
+                               << Envir.recorded_k_points[static_cast<std::size_t>(local_ik)]
+                               << "\n";
+                        for(int icol = 0; icol < block.col; ++icol){
+                            output << std::setw(12) << std::fixed <<  std::setprecision(7)
+                                   << block(local_ik, icol);
+                            if(icol % 10 == 9){
+                                output << "\n";
+                            }
+                        }
+                        output << "\n";
+                    }
+                }
+            }
+            break;
+        case 1:
+            {
+                // This output keeps the same numeric layout as the FHI-aims
+                // debug write:
+                //   (4I5,2F15.10) k_point, aux, basis_i, basis_j, real, imag.
+                // write_RI_coeff_k_real_debug only receives the real part, so the
+                // second floating column is kept as 0.0 for a format-compatible
+                // file.
+                if(static_cast<int>(RI_coeff_k_real.size()) != Envir.n_atom * Envir.n_atom){
+                    throw std::runtime_error("LibBSE[Chi0_BSE]: RI_coeff_k atom-pair count mismatch in debug output");
+                }
+                if(static_cast<int>(Envir.n_basis_atom.size()) != Envir.n_atom
+                || static_cast<int>(Envir.n_aux_basis_atom.size()) != Envir.n_atom){
+                    throw std::runtime_error("LibBSE[Chi0_BSE]: atom basis metadata is missing in debug output");
+                }
+
+                // Convert atom-local basis/aux indices to the 1-based global
+                // indices printed by the reference Fortran debug code.
+                std::vector<int> first_basis_atom(static_cast<std::size_t>(Envir.n_atom), 0);
+                std::vector<int> first_aux_atom(static_cast<std::size_t>(Envir.n_atom), 0);
+                for(int i_atom = 1; i_atom < Envir.n_atom; ++i_atom){
+                    first_basis_atom[static_cast<std::size_t>(i_atom)] =
+                        first_basis_atom[static_cast<std::size_t>(i_atom - 1)]
+                      + Envir.n_basis_atom[static_cast<std::size_t>(i_atom - 1)];
+                    first_aux_atom[static_cast<std::size_t>(i_atom)] =
+                        first_aux_atom[static_cast<std::size_t>(i_atom - 1)]
+                      + Envir.n_aux_basis_atom[static_cast<std::size_t>(i_atom - 1)];
                 }
 
                 const std::filesystem::path file =
                     debug_dir / ("RI_coeff_k_real_rank_"
                                + std::to_string(mpi_rank)
-                               + "_atom_"
-                               + std::to_string(i_atom) + "_"
-                               + std::to_string(j_atom) + ".txt");
+                               + "_fhi_aims.txt");
                 std::ofstream output(file);
-                output << "# RI_coeff_k_real\n";
-                output << "# rank " << mpi_rank << "\n";
-                output << "# i_atom " << i_atom << " j_atom " << j_atom << "\n";
-                output << "# rows: k_point, columns: aux_i * basis_j * basis_i\n";
-                output << "# local_n_kpoint " << block.row << " n_value " << block.col << "\n";
-                for(int local_ik = 0; local_ik < block.row; ++local_ik){
-                    // The matrix row is local to recorded_k_points, not the
-                    // global 0..n_kpoint-1 row anymore.
-                    output << "i_kpoint = "
-                           << Envir.recorded_k_points[static_cast<std::size_t>(local_ik)]
-                           << "\n";
-                    for(int icol = 0; icol < block.col; ++icol){
-                        output << std::setw(12) << std::fixed <<  std::setprecision(7)
-                               << block(local_ik, icol);
-                        if(icol % 10 == 9){
-                            output << "\n";
+                output << std::fixed << std::setprecision(10);
+
+                for(int local_ik = 0; local_ik < static_cast<int>(Envir.recorded_k_points.size()); ++local_ik){
+                    const int i_k_point =
+                        Envir.recorded_k_points[static_cast<std::size_t>(local_ik)];
+                    for(int i_atom = 0; i_atom < Envir.n_atom; ++i_atom){
+                        const int n_basis_i =
+                            Envir.n_basis_atom[static_cast<std::size_t>(i_atom)];
+                        const int n_aux_basis_i =
+                            Envir.n_aux_basis_atom[static_cast<std::size_t>(i_atom)];
+                        for(int j_atom = 0; j_atom < Envir.n_atom; ++j_atom){
+                            const int n_basis_j =
+                                Envir.n_basis_atom[static_cast<std::size_t>(j_atom)];
+                            const int block_index = i_atom * Envir.n_atom + j_atom;
+                            const matrix<double>& block =
+                                RI_coeff_k_real[static_cast<std::size_t>(block_index)];
+                            const int expected_col =
+                                n_basis_i * n_aux_basis_i * n_basis_j;
+                            if(block.row != static_cast<int>(Envir.recorded_k_points.size())
+                            || block.col != expected_col){
+                                throw std::runtime_error("LibBSE[Chi0_BSE]: RI_coeff_k matrix size mismatch in debug output");
+                            }
+
+                            // RI_coeff_k is stored as [i_basis][i_aux][j_basis].
+                            // The loop order below mirrors the Fortran output:
+                            // aux row first, then two NAO basis indices.
+                            for(int iaux = 0; iaux < n_aux_basis_i; ++iaux){
+                                const int i_aux_global =
+                                    first_aux_atom[static_cast<std::size_t>(i_atom)] + iaux + 1;
+                                for(int ibasis_i = 0; ibasis_i < n_basis_i; ++ibasis_i){
+                                    const int i_basis_global =
+                                        first_basis_atom[static_cast<std::size_t>(i_atom)] + ibasis_i + 1;
+                                    for(int ibasis_j = 0; ibasis_j < n_basis_j; ++ibasis_j){
+                                        const int j_basis_global =
+                                            first_basis_atom[static_cast<std::size_t>(j_atom)] + ibasis_j + 1;
+                                        const int RI_col =
+                                            ibasis_i * n_aux_basis_i * n_basis_j
+                                          + iaux * n_basis_j
+                                          + ibasis_j;
+                                        output << std::setw(5) << i_k_point
+                                               << std::setw(5) << i_aux_global
+                                               << std::setw(5) << i_basis_global
+                                               << std::setw(5) << j_basis_global
+                                               << std::setw(15) << block(local_ik, RI_col)
+                                               << "\n";
+                                    }
+                                }
+                            }
                         }
                     }
-                    output << "\n";
                 }
             }
+            break;
         }
+        
     }
 
 
@@ -118,8 +211,7 @@ namespace LibBSE{
                                std::vector<matrix<double>>& RI_coeff_k_real, 
                                std::vector<matrix<double>>& RI_coeff_k_imag){
         std::string local_error;
-        int n_RI_coeff_k = 0;
-        //in the future we may need larger k-point mesh
+
         try{
             if(Envir.lattice_vect.row != 3 || Envir.lattice_vect.col != 3){
                 throw std::runtime_error("LibBSE[Chi0_BSE]: lattice vectors are missing");
@@ -171,7 +263,7 @@ namespace LibBSE{
             // Envir.recorded_k_points[local_ik].
             RI_coeff_k_real.resize(static_cast<std::size_t>(n_atom_pair));
             RI_coeff_k_imag.resize(static_cast<std::size_t>(n_atom_pair));
-            n_RI_coeff_k = n_atom_pair;
+
             for(int i_atom = 0; i_atom < Envir.n_atom; ++i_atom){
                 for(int j_atom = 0; j_atom < Envir.n_atom; ++j_atom){
                     const int block_index = i_atom * Envir.n_atom + j_atom;
@@ -180,8 +272,8 @@ namespace LibBSE{
                       * Envir.n_basis_atom[static_cast<std::size_t>(j_atom)]
                       * Envir.n_basis_atom[static_cast<std::size_t>(i_atom)];
 
-                    // The column layout still follows read_Cs_data():
-                    //   aux_i * (basis_j * basis_i) + basis_j * basis_i + basis_i.
+                    // The column layout follows read_Cs_data():
+                    //   basis_i * (aux_i * basis_j) + aux_i * basis_j + basis_j.
                     RI_coeff_k_real[static_cast<std::size_t>(block_index)] =
                         matrix<double>(local_n_kpoint, n_value);
                     RI_coeff_k_imag[static_cast<std::size_t>(block_index)] =
@@ -307,12 +399,12 @@ namespace LibBSE{
         MPI_Allreduce(&local_failed, &any_failed, 1, MPI_INT, MPI_MAX,
                       Comm.LibBSE_MPI_raw());
         if(any_failed){
-            LibBSE_printf_all(Comm, "RI-k local build status: %s\n",
+            LibBSE_printf_all(Comm, "LibBSE[Chi0_BSE]: RI-k local build status: %s\n",
                               local_error.empty() ? "ok" : local_error.c_str());
             throw std::runtime_error("LibBSE[Chi0_BSE]: failed to build local k-space RI coeff");
         }
 
-        return n_RI_coeff_k;
+        return 0;
     }
 
     int get_M_mat(Enviroment& Envir, MpiComm Comm,
@@ -321,14 +413,12 @@ namespace LibBSE{
                   std::vector<matrix<double>>& M_mat_real,
                   std::vector<matrix<double>>& M_mat_imag){
         std::string local_error;
-        int n_M_mat = 0;
         try{
             const int n_atom = Envir.n_atom;
             const int n_atom_pair = n_atom * n_atom;
             const int local_n_kpoint =
                 static_cast<int>(Envir.recorded_k_points.size());
             const int n_KS_col = Envir.n_band_spin * Envir.n_band_state;
-            const int n_M_row = local_n_kpoint * n_KS_col;
 
             if(static_cast<int>(Envir.n_basis_atom.size()) != n_atom
             || static_cast<int>(Envir.n_aux_basis_atom.size()) != n_atom){
@@ -338,145 +428,120 @@ namespace LibBSE{
             || static_cast<int>(RI_coeff_k_imag.size()) != n_atom_pair){
                 throw std::runtime_error("LibBSE[Chi0_BSE]: RI_coeff_k atom-pair count mismatch");
             }
+            if(static_cast<int>(Envir.local_KS_eigenvector.size()) != local_n_kpoint){
+                throw std::runtime_error("LibBSE[Chi0_BSE]: local KS eigenvector count does not match recorded k points");
+            }
 
             // Build atom basis offsets inside the full KS eigenvector:
             // atom 0 occupies [0, n_basis_atom[0]), atom 1 follows it, etc.
-            std::vector<int> first_basis_atom(static_cast<std::size_t>(n_atom + 1), 0);
-            for(int i_atom = 0; i_atom < n_atom; ++i_atom){
+            std::vector<int> first_basis_atom(static_cast<std::size_t>(n_atom), 0);
+            for(int i_atom = 0; i_atom < n_atom - 1; ++i_atom){
                 first_basis_atom[static_cast<std::size_t>(i_atom + 1)] =
                     first_basis_atom[static_cast<std::size_t>(i_atom)]
                   + Envir.n_basis_atom[static_cast<std::size_t>(i_atom)];
             }
-            if(first_basis_atom[static_cast<std::size_t>(n_atom)] != Envir.n_basis){
+            if(first_basis_atom[static_cast<std::size_t>(n_atom-1)] 
+             + Envir.n_basis_atom[static_cast<std::size_t>(n_atom-1)] != Envir.n_basis){
                 throw std::runtime_error("LibBSE[Chi0_BSE]: atom basis count does not match KS basis count");
             }
-
-            // Map global k-point id to the local row of RI_coeff_k_*.
-            // RI_coeff_k_* rows follow Envir.recorded_k_points exactly.
-            std::map<int, int> local_kpoint_row;
-            for(int local_ik = 0; local_ik < local_n_kpoint; ++local_ik){
-                local_kpoint_row[Envir.recorded_k_points[static_cast<std::size_t>(local_ik)]]
-                    = local_ik;
-            }
-
-            // One KSBlock now stores the full eigenvector matrix for one k point.
-            // Build a small lookup so the M loop can find the matching KS matrix.
-            std::map<int, const KSBlock*> KS_block_of_kpoint;
-            for(const KSBlock& KS_block: Envir.local_KS_eigenvector){
-                if(KS_block.value.row != Envir.n_basis
-                || KS_block.value.col != n_KS_col){
-                    throw std::runtime_error("LibBSE[Chi0_BSE]: KS eigenvector matrix size mismatch");
-                }
-                if(local_kpoint_row.find(KS_block.i_k_point) == local_kpoint_row.end()){
-                    throw std::runtime_error("LibBSE[Chi0_BSE]: KS eigenvector k point was not recorded");
-                }
-                KS_block_of_kpoint[KS_block.i_k_point] = &KS_block;
-            }
-            for(const auto& k_row: local_kpoint_row){
-                if(KS_block_of_kpoint.find(k_row.first) == KS_block_of_kpoint.end()){
-                    throw std::runtime_error("LibBSE[Chi0_BSE]: recorded k point has no KS eigenvector matrix");
-                }
-            }
-
             // M_mat_real/imag:
-            //   vector index: i_atom
-            //   row:          local_kpoint * (spin*state) + i_state_spin
-            //   column:       i_aux_basis * i_basis + i_basis
-            M_mat_real.resize(static_cast<std::size_t>(n_atom));
-            M_mat_imag.resize(static_cast<std::size_t>(n_atom));
-            n_M_mat = n_atom;
-            for(int i_atom = 0; i_atom < n_atom; ++i_atom){
-                const int n_basis_i =
-                    Envir.n_basis_atom[static_cast<std::size_t>(i_atom)];
-                const int n_aux_basis_i =
-                    Envir.n_aux_basis_atom[static_cast<std::size_t>(i_atom)];
-                const int n_value = n_aux_basis_i * n_basis_i;
-                M_mat_real[static_cast<std::size_t>(i_atom)] =
-                    matrix<double>(n_M_row, n_value);
-                M_mat_imag[static_cast<std::size_t>(i_atom)] =
-                    matrix<double>(n_M_row, n_value);
-                zeros(M_mat_real[static_cast<std::size_t>(i_atom)]);
-                zeros(M_mat_imag[static_cast<std::size_t>(i_atom)]);
+            //   vector : <i_atom * j_atom> 
+            //   matrix : <local_kpoint, n_state_spin * i_basis * i_aux_basis>
+            // Each rank now keeps only the k points that it owns in
+            // KS_eigenvector.  Therefore each atom-pair block has
+            // local_n_kpoint rows, and row local_ik maps to
+            // Envir.recorded_k_points[local_ik].
+            M_mat_real.resize(static_cast<std::size_t>(n_atom_pair));
+            M_mat_imag.resize(static_cast<std::size_t>(n_atom_pair));
+            
+            for(int i_atom = 0; i_atom < Envir.n_atom; ++i_atom){
+                for(int j_atom = 0; j_atom < Envir.n_atom; ++j_atom){
+                    const int block_index = i_atom * Envir.n_atom + j_atom;
+                    const int n_value =
+                        Envir.n_aux_basis_atom[static_cast<std::size_t>(i_atom)]
+                      * Envir.n_basis_atom[static_cast<std::size_t>(i_atom)]
+                      * n_KS_col;
+
+                    // One row stores the row-major result of
+                    //   (j_basis x n_state_spin).T
+                    //     @ ((i_basis * i_aux_basis) x j_basis).T
+                    // so the flattened column order is:
+                    //   state_spin * (i_basis * i_aux_basis)
+                    //     + i_basis * n_aux_basis_i + i_aux_basis.
+                    M_mat_real[static_cast<std::size_t>(block_index)] =
+                        matrix<double>(local_n_kpoint, n_value);
+                    M_mat_imag[static_cast<std::size_t>(block_index)] =
+                        matrix<double>(local_n_kpoint, n_value);
+                    zeros(M_mat_real[static_cast<std::size_t>(block_index)]);
+                    zeros(M_mat_imag[static_cast<std::size_t>(block_index)]);
+                }
             }
-
+            // \tilde{M}_i,n^\mu(k) = c_j,n(k) \tilde{C}_i(0),j(k)^\mu(0)
             for(int local_ik = 0; local_ik < local_n_kpoint; ++local_ik){
-                const int i_kpoint =
-                    Envir.recorded_k_points[static_cast<std::size_t>(local_ik)];
-                const KSBlock& KS_block =
-                    *KS_block_of_kpoint[static_cast<int>(i_kpoint)];
-
-                for(int i_atom = 0; i_atom < n_atom; ++i_atom){
-                    const int n_basis_i =
-                        Envir.n_basis_atom[static_cast<std::size_t>(i_atom)];
-                    const int n_aux_basis_i =
-                        Envir.n_aux_basis_atom[static_cast<std::size_t>(i_atom)];
-                    const int n_M_col = n_aux_basis_i * n_basis_i;
-                    matrix<double>& curr_M_real =
-                        M_mat_real[static_cast<std::size_t>(i_atom)];
-                    matrix<double>& curr_M_imag =
-                        M_mat_imag[static_cast<std::size_t>(i_atom)];
-
-                    for(int j_atom = 0; j_atom < n_atom; ++j_atom){
-                        const int n_basis_j =
-                            Envir.n_basis_atom[static_cast<std::size_t>(j_atom)];
-                        const int block_index = i_atom * n_atom + j_atom;
+                auto& curr_eigenvector = Envir.local_KS_eigenvector[local_ik].value;
+                if(curr_eigenvector.row != Envir.n_basis || curr_eigenvector.col != n_KS_col){
+                    throw std::runtime_error("LibBSE[Chi0_BSE]: KS eigenvector matrix size mismatch while building M");
+                }
+                auto curr_eigenvector_split_ptr = split(curr_eigenvector, first_basis_atom);
+                for(int j_atom = 0; j_atom < Envir.n_atom; ++j_atom){
+                    auto curr_ptr = curr_eigenvector_split_ptr[j_atom];
+                    const int n_basis_j =
+                        Envir.n_basis_atom[static_cast<std::size_t>(j_atom)];
+                    for(int i_atom = 0; i_atom < Envir.n_atom; ++i_atom){
+                        const int n_basis_i =
+                            Envir.n_basis_atom[static_cast<std::size_t>(i_atom)];
+                        const int n_aux_basis_i =
+                            Envir.n_aux_basis_atom[static_cast<std::size_t>(i_atom)];
+                        const int block_index = i_atom * Envir.n_atom + j_atom;
+                        const int RI_col =
+                            n_basis_i * n_aux_basis_i * n_basis_j;
+                        const int M_col =
+                            n_KS_col * n_basis_i * n_aux_basis_i;
                         const matrix<double>& curr_RI_real =
                             RI_coeff_k_real[static_cast<std::size_t>(block_index)];
                         const matrix<double>& curr_RI_imag =
                             RI_coeff_k_imag[static_cast<std::size_t>(block_index)];
-                        const int expected_RI_col =
-                            n_aux_basis_i * n_basis_j * n_basis_i;
-                        if(curr_RI_real.row != local_n_kpoint
-                        || curr_RI_imag.row != local_n_kpoint
-                        || curr_RI_real.col != expected_RI_col
-                        || curr_RI_imag.col != expected_RI_col){
-                            throw std::runtime_error("LibBSE[Chi0_BSE]: RI_coeff_k matrix size mismatch while building M");
+                        matrix<double>& curr_M_real =
+                            M_mat_real[static_cast<std::size_t>(block_index)];
+                        matrix<double>& curr_M_imag =
+                            M_mat_imag[static_cast<std::size_t>(block_index)];
+
+                        if(curr_RI_real.row != local_n_kpoint || curr_RI_imag.row != local_n_kpoint
+                        || curr_RI_real.col != RI_col || curr_RI_imag.col != RI_col
+                        || curr_M_real.col != M_col || curr_M_imag.col != M_col){
+                            throw std::runtime_error("LibBSE[Chi0_BSE]: matrix size mismatch while building M");
                         }
 
-                        // C_ij is reshaped from one RI_coeff_k row:
-                        //   row    -> j_basis
-                        //   column -> i_aux_basis * i_basis + i_basis
-                        // This turns c_j,n(k) C_i,j^mu(k) into one GEMM for
-                        // all local states at this k point.
-                        matrix<std::complex<double>> C_mat(n_basis_j, n_M_col);
-                        for(int ibasis_j = 0; ibasis_j < n_basis_j; ++ibasis_j){
-                            for(int iaux = 0; iaux < n_aux_basis_i; ++iaux){
-                                for(int ibasis_i = 0; ibasis_i < n_basis_i; ++ibasis_i){
-                                    const int RI_col =
-                                        iaux * n_basis_i * n_basis_j
-                                      + ibasis_j * n_basis_i
-                                      + ibasis_i;
-                                    const int C_col =
-                                        iaux * n_basis_i + ibasis_i;
-                                    C_mat(ibasis_j, C_col) =
-                                        std::complex<double>(curr_RI_real(local_ik, RI_col),
-                                                             curr_RI_imag(local_ik, RI_col));
-                                }
-                            }
+                        // Take one k-row of C_i,j^mu(k), combine the stored real
+                        // and imaginary parts, then reshape without moving data.
+                        // The original layout is [i_basis][i_aux][j_basis], so
+                        // this view is ((i_basis * i_aux_basis) x j_basis).
+                        matrix<std::complex<double>> curr_RI_coeff(1, RI_col);
+                        for(int icol = 0; icol < RI_col; ++icol){
+                            curr_RI_coeff(0, icol) =
+                                std::complex<double>(curr_RI_real(local_ik, icol),
+                                                     curr_RI_imag(local_ik, icol));
+                        }
+                        if(!curr_RI_coeff.reshape(n_basis_i * n_aux_basis_i, n_basis_j)){
+                            throw std::runtime_error("LibBSE[Chi0_BSE]: failed to reshape RI_coeff_k row while building M");
                         }
 
-                        // KS_j holds atom-j rows of c(i_basis,n,spin).
-                        // Transposing it gives c_j,n(k) in the formula:
-                        //   M_i,n^mu(k) = c_j,n(k) C_i,j^mu(k).
-                        matrix<std::complex<double>> KS_mat(
-                            n_basis_j, n_KS_col);
-                        const int first_basis_j =
-                            first_basis_atom[static_cast<std::size_t>(j_atom)];
-                        for(int ibasis_j = 0; ibasis_j < n_basis_j; ++ibasis_j){
-                            for(int iKS_col = 0; iKS_col < n_KS_col; ++iKS_col){
-                                KS_mat(ibasis_j, iKS_col) =
-                                    KS_block.value(first_basis_j + ibasis_j, iKS_col);
-                            }
-                        }
+                        // curr_ptr is the atom-j slice of the KS eigenvector:
+                        //   j_basis x n_state_spin.
+                        // The product below is:
+                        //   (j_basis x n_state_spin).T
+                        //     @ ((i_basis * i_aux_basis) x j_basis).T
+                        // giving n_state_spin x (i_basis * i_aux_basis).
+                        matrix<std::complex<double>> curr_M =
+                            pointer_times(curr_ptr, curr_RI_coeff, 'T', 'T',
+                                          n_KS_col, n_basis_j);
 
-                        matrix<std::complex<double>> M_addon =
-                            transpose_times(KS_mat, C_mat, 'T', 'N');
-                        for(int iKS_col = 0; iKS_col < M_addon.row; ++iKS_col){
-                            const int M_row = local_ik * n_KS_col + iKS_col;
-                            for(int icol = 0; icol < M_addon.col; ++icol){
-                                curr_M_real(M_row, icol) += M_addon(iKS_col, icol).real();
-                                curr_M_imag(M_row, icol) += M_addon(iKS_col, icol).imag();
-                            }
+                        if(curr_M.size != M_col){
+                            throw std::runtime_error("LibBSE[Chi0_BSE]: M product size mismatch");
+                        }
+                        for(int icol = 0; icol < M_col; ++icol){
+                            curr_M_real(local_ik, icol) = curr_M.matrix_ptr[icol].real();
+                            curr_M_imag(local_ik, icol) = curr_M.matrix_ptr[icol].imag();
                         }
                     }
                 }
@@ -495,7 +560,7 @@ namespace LibBSE{
                               local_error.empty() ? "ok" : local_error.c_str());
             throw std::runtime_error("LibBSE[Chi0_BSE]: failed to build M matrix");
         }
-        return n_M_mat;
+        return 0;
     }
 
     int calculate_chi0_BSE(Enviroment& Envir, MpiComm Comm){
@@ -507,16 +572,25 @@ namespace LibBSE{
             // TODO: implement a more efficient way like matrix flattening
             // TODO: use irkp to save memory and time.
             
+            LibBSE_printf_root(Comm, "Calculating LRI coeff in k space...\n");
             // vector <i_atom * j_atom> 
-            // matrix <n_kpoint, i_basis * j_basis * i_aux_basis>
+            // matrix <local_kpoint, i_basis * i_aux_basis * j_basis>
             std::vector<matrix<double>> RI_coeff_k_real; 
             std::vector<matrix<double>> RI_coeff_k_imag; 
-            const int n_RI_coeff_k = get_RI_k_coeff(Envir, Comm, RI_coeff_k_real, RI_coeff_k_imag);            
+            const int ret = get_RI_k_coeff(Envir, Comm, RI_coeff_k_real, RI_coeff_k_imag);   
+            LibBSE_printf_root(Comm, "Finished LRI coeff in k space!\n");
+
             //2. \tilde{M}_i,n^\mu(k) = c_j,n(k) \tilde{C}_i(0),j(k)^\mu(0)
+            LibBSE_printf_root(Comm, "Calculating RI coeff in k space...\n");
+            //   vector : <i_atom * j_atom> 
+            //   matrix : <local_kpoint * n_spin, i_basis * i_aux_basis * n_state>
+            // store in real & imag seperately is useful for avoid repeat matrix mult in conjuates.
             std::vector<matrix<double>> M_mat_real; 
             std::vector<matrix<double>> M_mat_imag; 
             get_M_mat(Envir, Comm, RI_coeff_k_real, RI_coeff_k_imag, M_mat_real, M_mat_imag);
-
+            
+            //Now, we have 2 ways: A) calculate brute force, store a 5-indice mat. B) calculate by q index and store 4-indice mat.
+            int chi0_route = 0; // 0: A), 1: B)
             //3. C_m,n,\sigma^\mu(k+q,k) = 
             
 
