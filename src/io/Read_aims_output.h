@@ -56,9 +56,8 @@ namespace LibBSE{
     struct KSBlock {
         int file_index = -1;
         int i_k_point = 0;
-        int i_band_spin = 0;
-        int i_state = 0;
-        std::vector<std::complex<double>> value;
+        // value(i_basis, (i_spin - 1) * n_band_state + (i_state - 1))
+        matrix<std::complex<double>> value;
     };
 
     struct RIBlock {

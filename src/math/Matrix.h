@@ -62,6 +62,7 @@ namespace LibBSE{
 	    void operator-=(const matrix &m);
 	    bool operator==(const matrix &m);
         bool is_empty();
+        bool reshape(const int r, const int c);
         void empty();
     };
     
@@ -232,6 +233,18 @@ namespace LibBSE{
             return true;
         }
         return false;
+    }
+
+    // Reshape only changes the visible row/column shape.
+    // The storage is already one-dimensional, so matrix_ptr is untouched.
+    template<typename T>
+    bool matrix<T>::reshape(const int r, const int c){
+        if(r < 0 || c < 0 || r * c != size){
+            return false;
+        }
+        row = r;
+        col = c;
+        return true;
     }
 
     template<typename T>

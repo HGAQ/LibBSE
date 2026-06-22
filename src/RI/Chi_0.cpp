@@ -400,56 +400,61 @@ namespace LibBSE{
                                const bool positive_branch,
                                const double tau,
                                Chi0TensorMap& G_libri){
-        if (ks.value.size() != static_cast<std::size_t>(Enviro.n_basis)) {
-            throw std::runtime_error("LibBSE[Chi0]: KS eigenvector length does not match n_basis");
+        const int n_KS_col = Enviro.n_band_spin * Enviro.n_band_state;
+        if (ks.value.row != Enviro.n_basis || ks.value.col != n_KS_col) {
+            throw std::runtime_error("LibBSE[Chi0]: KS eigenvector matrix size does not match band_out");
         }
-        const BandEntry* band = find_band_entry(Enviro, ks.i_k_point, ks.i_band_spin, ks.i_state);
-        if (band == nullptr) {
-            throw std::runtime_error("LibBSE[Chi0]: cannot find band entry for KS eigenvector");
-        }
-        const double occ_unit = occupation_unit(Enviro);
-        const double occ = std::clamp(band->band_occ / occ_unit, 0.0, 1.0);
-        const double branch_weight = positive_branch ? (1.0 - occ) : occ;
-        if (branch_weight == 0.0) {
-            return;
-        }
-        // This is the same branch split as LibRPA's space-time chi0 path:
-        // positive tau uses the unoccupied part, negative tau the occupied
-        // part.  The small clamp avoids numerical blow-up for the wrong
-        // branch if a state sits on the other side of E_Fermi.
-        const double signed_tau = positive_branch ? tau : -tau;
-        double exponent = -signed_tau * (band->E_band - Enviro.E_Fermi);
-        if (exponent > 0.0) {
-            exponent = 0.0;
-        }
-        double scale = std::exp(exponent) * branch_weight
-                     / static_cast<double>(std::max(1, Enviro.n_k_point));
-        if (!positive_branch) {
-            scale *= -1.0;
-        }
-        for (const Chi0Cell& R : cells) {
-            const double angle = phase_angle(Enviro, ks.i_k_point, R);
-            const std::complex<double> phase(std::cos(angle), std::sin(angle));
-            for (const int I : basis.atoms) {
-                const int nI = basis.n_basis.at(I);
-                const int firstI = basis.first_basis.at(I);
-                for (const int J : basis.atoms) {
-                    const int nJ = basis.n_basis.at(J);
-                    const int firstJ = basis.first_basis.at(J);
-                    RI::Tensor<Chi0Data>& block = G_libri[I][{J, R}];
-                    if (block.empty()) {
-                        auto data = std::make_shared<std::valarray<Chi0Data>>(
-                            static_cast<std::size_t>(nI * nJ));
-                        block = RI::Tensor<Chi0Data>(
-                            {static_cast<std::size_t>(nI), static_cast<std::size_t>(nJ)},
-                            data);
-                    }
-                    for (int i = 0; i < nI; ++i) {
-                        const std::complex<double> ci = ks.value[static_cast<std::size_t>(firstI + i)];
-                        for (int j = 0; j < nJ; ++j) {
-                            const std::complex<double> cj = ks.value[static_cast<std::size_t>(firstJ + j)];
-                            (*block.data)[static_cast<std::size_t>(i * nJ + j)]
-                                += (phase * scale * ci * std::conj(cj)).real();
+        for (int iKS_col = 0; iKS_col < n_KS_col; ++iKS_col) {
+            const int i_band_spin = iKS_col / Enviro.n_band_state + 1;
+            const int i_state = iKS_col % Enviro.n_band_state + 1;
+            const BandEntry* band = find_band_entry(Enviro, ks.i_k_point, i_band_spin, i_state);
+            if (band == nullptr) {
+                throw std::runtime_error("LibBSE[Chi0]: cannot find band entry for KS eigenvector");
+            }
+            const double occ_unit = occupation_unit(Enviro);
+            const double occ = std::clamp(band->band_occ / occ_unit, 0.0, 1.0);
+            const double branch_weight = positive_branch ? (1.0 - occ) : occ;
+            if (branch_weight == 0.0) {
+                continue;
+            }
+            // This is the same branch split as LibRPA's space-time chi0 path:
+            // positive tau uses the unoccupied part, negative tau the occupied
+            // part.  The small clamp avoids numerical blow-up for the wrong
+            // branch if a state sits on the other side of E_Fermi.
+            const double signed_tau = positive_branch ? tau : -tau;
+            double exponent = -signed_tau * (band->E_band - Enviro.E_Fermi);
+            if (exponent > 0.0) {
+                exponent = 0.0;
+            }
+            double scale = std::exp(exponent) * branch_weight
+                         / static_cast<double>(std::max(1, Enviro.n_k_point));
+            if (!positive_branch) {
+                scale *= -1.0;
+            }
+            for (const Chi0Cell& R : cells) {
+                const double angle = phase_angle(Enviro, ks.i_k_point, R);
+                const std::complex<double> phase(std::cos(angle), std::sin(angle));
+                for (const int I : basis.atoms) {
+                    const int nI = basis.n_basis.at(I);
+                    const int firstI = basis.first_basis.at(I);
+                    for (const int J : basis.atoms) {
+                        const int nJ = basis.n_basis.at(J);
+                        const int firstJ = basis.first_basis.at(J);
+                        RI::Tensor<Chi0Data>& block = G_libri[I][{J, R}];
+                        if (block.empty()) {
+                            auto data = std::make_shared<std::valarray<Chi0Data>>(
+                                static_cast<std::size_t>(nI * nJ));
+                            block = RI::Tensor<Chi0Data>(
+                                {static_cast<std::size_t>(nI), static_cast<std::size_t>(nJ)},
+                                data);
+                        }
+                        for (int i = 0; i < nI; ++i) {
+                            const std::complex<double> ci = ks.value(firstI + i, iKS_col);
+                            for (int j = 0; j < nJ; ++j) {
+                                const std::complex<double> cj = ks.value(firstJ + j, iKS_col);
+                                (*block.data)[static_cast<std::size_t>(i * nJ + j)]
+                                    += (phase * scale * ci * std::conj(cj)).real();
+                            }
                         }
                     }
                 }

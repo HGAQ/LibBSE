@@ -1,6 +1,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <algorithm>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -245,6 +246,7 @@ namespace LibBSE
 
     int read_KS_eigenvector_group(const fs::path directory,
                                   std::vector<KSBlock>& local_KS_eigenvector,
+                                  std::vector<int>& recorded_k_points,
                                   const Enviroment& Envir,
                                   const MpiComm& comm,
                                   const std::string& prefix){
@@ -262,45 +264,58 @@ namespace LibBSE
                 return 1;
             }
 
-            int i_k_point = 0;
-            input >> i_k_point;
-            if (!input) {
-                std::cerr << "LibBSE[Read]: failed to read KS eigenvector header " << file.path.string() << "\n";
-                return 1;
-            }
-
-            // Treat each (spin,state) vector as one block of n_basis complex values.
-            // This keeps file ownership local but still lets multiple ranks share a large k-point file.
+            // One KS_eigenvector file can contain more than one k point.
+            // The file layout is repeated as:
+            //   i_k_point
+            //   (real imag) for every spin/state/basis value
+            // so keep reading k-point sections until EOF.
             const int expected_blocks = Envir.n_band_spin * Envir.n_band_state;
-            for (int iblock = 0; iblock < expected_blocks; ++iblock) {
+            while (true) {
+                int i_k_point = 0;
+                if (!(input >> i_k_point)) {
+                    if (input.eof()) {
+                        break;
+                    }
+                    std::cerr << "LibBSE[Read]: failed to read KS eigenvector header "
+                              << file.path.string() << "\n";
+                    return 1;
+                }
+                if (i_k_point <= 0 || i_k_point > Envir.n_k_point) {
+                    std::cerr << "LibBSE[Read]: KS eigenvector k-point index is outside band_out "
+                              << file.path.string() << "\n";
+                    return 1;
+                }
+
+                // One KSBlock stores the complete eigenvector matrix for this
+                // k point.  File order is basis first, then state/spin:
+                //   c(i_basis, i_state, i_spin).
                 KSBlock block;
                 block.file_index = file.index;
                 block.i_k_point = i_k_point;
-                block.i_band_spin = iblock / Envir.n_band_state + 1;
-                block.i_state = iblock % Envir.n_band_state + 1;
-
-                const bool keep_block =
-                    (iblock % assignment.rank_count == assignment.local_rank);
-                if (keep_block) {
-                    block.value.reserve(static_cast<std::size_t>(Envir.n_basis));
-                }
-                for (int ibasis = 0; ibasis < Envir.n_basis; ++ibasis) {
-                    double real = 0.0;
-                    double imag = 0.0;
-                    input >> real >> imag;
-                    if (!input) {
-                        std::cerr << "LibBSE[Read]: failed to read KS eigenvector value " << file.path.string() << "\n";
-                        return 1;
-                    }
-                    if (keep_block) {
-                        block.value.emplace_back(real, imag);
+                block.value = matrix<std::complex<double>>(Envir.n_basis, expected_blocks);
+                for (int iblock = 0; iblock < expected_blocks; ++iblock) {
+                    for (int ibasis = 0; ibasis < Envir.n_basis; ++ibasis) {
+                        double real = 0.0;
+                        double imag = 0.0;
+                        input >> real >> imag;
+                        if (!input) {
+                            std::cerr << "LibBSE[Read]: failed to read KS eigenvector value "
+                                      << file.path.string() << "\n";
+                            return 1;
+                        }
+                        block.value(ibasis, iblock) =
+                            std::complex<double>(real, imag);
                     }
                 }
-                if (keep_block) {
-                    local_KS_eigenvector.push_back(std::move(block));
+                local_KS_eigenvector.push_back(std::move(block));
+                if (std::find(recorded_k_points.begin(), recorded_k_points.end(), i_k_point)
+                    == recorded_k_points.end()) {
+                    recorded_k_points.push_back(i_k_point);
                 }
             }
         }
+        // Keep the list deterministic for later loops and debug output.
+        std::sort(recorded_k_points.begin(), recorded_k_points.end());
         return 0;
     }
 
@@ -479,6 +494,7 @@ namespace LibBSE
         Envir.local_coulomb_mat.clear();
         Envir.local_KS_eigenvector.clear();
         Envir.local_RI_coeff.clear();
+        Envir.recorded_k_points.clear();
         read_status = read_coulomb_cut(root, Envir, Comm);
         if (read_status != 0) {
             return read_status;
@@ -501,11 +517,13 @@ namespace LibBSE
                                 ", mat_blocks=%zu"
                                 ", RI_blocks=%zu"
                                 ", KS_blocks=%zu"
+                                ", KS_kpoints=%zu"
                                 ", ir_k_point=%d\n",
                                 Envir.local_coulomb_cut.size(),
                                 Envir.local_coulomb_mat.size(),
                                 Envir.local_RI_coeff.size(),
                                 Envir.local_KS_eigenvector.size(),
+                                Envir.recorded_k_points.size(),
                                 Envir.ir_k_point);
         LibBSE_printf_root(Comm, "Read band_out: nkpoint=%d, spin=%d, states=%d, basis=%d, E_Fermi=%f\n",
                                 Envir.n_k_point, 
@@ -757,22 +775,28 @@ namespace LibBSE
 
     int read_coulomb_cut(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
         Envir.n_aux_basis = read_coulomb_group(directory, Envir.local_coulomb_cut, comm, "coulomb_cut_");
-        if(Envir.n_aux_basis > 0){
-            return 0;
-        }
-        else{
+        if(Envir.n_aux_basis < 0){
             return 1;
         }
+        if(Envir.n_aux_basis == 0){
+            LibBSE_printf_root(comm,
+                               "LibBSE[Read]: missing coulomb_cut_*.txt files in dataset directory.\n");
+            return 1;
+        }
+        return 0;
     }
 
     int read_coulomb_mat(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
         int ret = read_coulomb_group(directory, Envir.local_coulomb_mat, comm, "coulomb_mat_");
-        if(ret > 0){
-            return 0;
-        }
-        else{
+        if(ret < 0){
             return 1;
         }
+        if(ret == 0){
+            LibBSE_printf_root(comm,
+                               "LibBSE[Read]: missing coulomb_mat_*.txt files in dataset directory.\n");
+            return 1;
+        }
+        return 0;
     }
 
     int read_Cs_data(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
@@ -780,7 +804,12 @@ namespace LibBSE
     }
 
     int read_KS_eigenvector(const fs::path directory, Enviroment& Envir, const MpiComm& comm){
-        return read_KS_eigenvector_group(directory, Envir.local_KS_eigenvector, Envir, comm, "KS_eigenvector_");
+        return read_KS_eigenvector_group(directory,
+                                         Envir.local_KS_eigenvector,
+                                         Envir.recorded_k_points,
+                                         Envir,
+                                         comm,
+                                         "KS_eigenvector_");
     }
 
     //Function to find Files named as perfix_xxx.suffix
