@@ -1,6 +1,8 @@
 #pragma once
+#include <atomic>
 #include <cassert>
 #include <complex>
+#include <cstddef>
 #include <iomanip>
 #include <ostream>
 #include <fstream>
@@ -11,6 +13,85 @@
 #include "../interface/Blas_Interface.h"
 
 namespace LibBSE{
+    typedef std::complex<double> complex;
+
+    struct MatrixMemoryTracker{
+        inline static std::atomic<long long> current_bytes{0};
+        inline static std::atomic<long long> peak_bytes{0};
+        inline static std::atomic<long long> live_buffers{0};
+        inline static std::atomic<long long> total_allocations{0};
+
+        static void add_bytes(const long long bytes){
+            if(bytes <= 0){
+                return;
+            }
+            const long long current =
+                current_bytes.fetch_add(bytes) + bytes;
+            live_buffers.fetch_add(1);
+            total_allocations.fetch_add(1);
+
+            long long peak = peak_bytes.load();
+            while(current > peak
+               && !peak_bytes.compare_exchange_weak(peak, current)){
+            }
+        }
+
+        static void remove_bytes(const long long bytes){
+            if(bytes <= 0){
+                return;
+            }
+            current_bytes.fetch_sub(bytes);
+            live_buffers.fetch_sub(1);
+        }
+    };
+
+    inline double matrix_bytes_to_mib(const long long bytes){
+        return static_cast<double>(bytes) / 1024.0 / 1024.0;
+    }
+
+    inline void report_matrix_memory(const LibBSE::MpiComm& Comm,
+                                     const char* label = "matrix memory"){
+        const long long local_current =
+            MatrixMemoryTracker::current_bytes.load();
+        const long long local_peak =
+            MatrixMemoryTracker::peak_bytes.load();
+        const long long local_live =
+            MatrixMemoryTracker::live_buffers.load();
+        const long long local_alloc =
+            MatrixMemoryTracker::total_allocations.load();
+
+        long long sum_current = 0;
+        long long max_current = 0;
+        long long max_peak = 0;
+        long long sum_live = 0;
+        long long sum_alloc = 0;
+
+        MPI_Reduce(&local_current, &sum_current, 1, MPI_LONG_LONG,
+                   MPI_SUM, 0, Comm.LibBSE_MPI_raw());
+        MPI_Reduce(&local_current, &max_current, 1, MPI_LONG_LONG,
+                   MPI_MAX, 0, Comm.LibBSE_MPI_raw());
+        MPI_Reduce(&local_peak, &max_peak, 1, MPI_LONG_LONG,
+                   MPI_MAX, 0, Comm.LibBSE_MPI_raw());
+        MPI_Reduce(&local_live, &sum_live, 1, MPI_LONG_LONG,
+                   MPI_SUM, 0, Comm.LibBSE_MPI_raw());
+        MPI_Reduce(&local_alloc, &sum_alloc, 1, MPI_LONG_LONG,
+                   MPI_SUM, 0, Comm.LibBSE_MPI_raw());
+
+        LibBSE_printf_root(Comm,
+            "---------------------------------------------------\n"
+            "Matrix Memory usage [%s]:\n"
+            "---------------------------------------------------\n"
+            "\tcurrent_sum\t=\t%.3f MiB \n"
+            "\tcurr_max_rank\t=\t%.3f MiB\n\tpeak_max_rank\t=\t%.3f MiB \n"
+            //"\tlive_buffers=%lld\n\ttotal_allocations=%lld\n"
+            "---------------------------------------------------\n"
+            ,
+            label,
+            matrix_bytes_to_mib(sum_current),
+            matrix_bytes_to_mib(max_current),
+            matrix_bytes_to_mib(max_peak));
+    }
+
     //Matrix: only for 2 dimension case.
     template <typename T>
     class matrix{
@@ -27,12 +108,16 @@ namespace LibBSE{
             if(row && col){
                 size = row * col;
 	        	matrix_ptr = new T[size];
+                MatrixMemoryTracker::add_bytes(
+                    static_cast<long long>(size) * sizeof(T));
 	        }
         }
 	    matrix( const matrix &m ): 
         row(m.row), col(m.col), size(m.size), matrix_ptr(nullptr){
             if(size){
                 matrix_ptr = new T[size];
+                MatrixMemoryTracker::add_bytes(
+                    static_cast<long long>(size) * sizeof(T));
                 for(int i = 0; i < size; ++i){
                     matrix_ptr[i] = m.matrix_ptr[i];
                 }
@@ -46,6 +131,8 @@ namespace LibBSE{
         
 	    ~matrix(){
             if(matrix_ptr){
+                MatrixMemoryTracker::remove_bytes(
+                    static_cast<long long>(size) * sizeof(T));
 	        	delete[] matrix_ptr;
 	        	matrix_ptr = nullptr;
 	        }
@@ -113,11 +200,15 @@ namespace LibBSE{
         // This keeps assignment cheap for matrices with the same shape.
         if(size != m.size){
             if(matrix_ptr){
+                MatrixMemoryTracker::remove_bytes(
+                    static_cast<long long>(size) * sizeof(T));
                 delete[] matrix_ptr;
                 matrix_ptr = nullptr;
             }
             if(m.size){
                 matrix_ptr = new T[m.size];
+                MatrixMemoryTracker::add_bytes(
+                    static_cast<long long>(m.size) * sizeof(T));
             }
         }
 
@@ -142,6 +233,8 @@ namespace LibBSE{
         }
 
         if(matrix_ptr){
+            MatrixMemoryTracker::remove_bytes(
+                static_cast<long long>(size) * sizeof(T));
             delete[] matrix_ptr;
         }
 
@@ -254,7 +347,11 @@ namespace LibBSE{
 
     template<typename T>
     void matrix<T>::empty(){
-        delete[] matrix_ptr;
+        if(matrix_ptr){
+            MatrixMemoryTracker::remove_bytes(
+                static_cast<long long>(size) * sizeof(T));
+            delete[] matrix_ptr;
+        }
         row = 0;
         col = 0;
         size = 0;
