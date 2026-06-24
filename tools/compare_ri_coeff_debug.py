@@ -128,6 +128,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-reference-abs", type=float, default=2.0)
     parser.add_argument("--max-mine-abs", type=float, default=2.0)
     parser.add_argument("--max-report", type=int, default=20)
+    ######################################################################
+    ######################################################################
+    ######################################################################
+    ######################################################################
+    ######################################################################
+    ######################################################################
+    ######################################################################
+    ######################################################################
+    ######################################################################
     parser.add_argument(
         "--infer-aux-permutation",
         action="store_true",
@@ -136,7 +145,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--perm-kpoint",
         type=int,
-        default=1,
+        default=0,
         help="K point used for aux permutation inference. Use 0 to use all k points.",
     )
     parser.add_argument(
