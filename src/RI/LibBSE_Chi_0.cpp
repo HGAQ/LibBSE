@@ -593,8 +593,6 @@ namespace LibBSE{
             int chi0_route = 0; // 0: A), 1: B)
             //3. C_m,n,\sigma^\mu(k+q,k) = 
             
-
-
             //
 
             return 0;
