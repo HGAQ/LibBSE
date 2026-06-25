@@ -23,6 +23,6 @@ Detailed format is included in LibRPA Docs.
 3.  You are ready to go! Put them in the same directory and run
 
 ```
-mpirun -np 4 ./LibBSE/build/LibBSE ./2MGO
+mpirun -np 4 ./LibBSE/build/LibBSE ./3MGO
 ```
 

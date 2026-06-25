@@ -21,6 +21,13 @@ namespace fs = std::filesystem;
 
 namespace LibBSE{
     typedef std::pair<std::string, std::vector<double>> AtomPos;
+    
+    struct task{
+        int task_k_point = 0;
+        int total_rank_num = 0;
+        int atom_pair_lb = 0;
+        int atom_pair_ub = 0;
+    };
 
     struct FileAssignment {
         bool read_file = false;
@@ -113,8 +120,10 @@ namespace LibBSE{
             std::vector<KSBlock> local_KS_eigenvector; // [n_kpoint] [n_basis_i] ([n_state] [n_spin]).flatten
             std::vector<int> recorded_k_points;// attention that this is record in Fortran index, start with 1.
             //Chi_0 outputs
+
+            std::vector<matrix<complex>> M_mat; // vector : <local_atom_pair>    matrix : <local_kpoint, n_state_spin * i_basis * i_aux_basis>
+            std::vector<task> recorded_task;
             
-            std::vector<matrix<complex>> M_mat;
     };
     
     struct IndexedFile {

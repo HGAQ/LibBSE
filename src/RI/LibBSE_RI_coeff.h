@@ -9,7 +9,7 @@
 
 namespace LibBSE{
     
-    int calculate_chi0_BSE(Enviroment& Enviro, MpiComm LIBBSE_MPI_COMM);
+    int calculate_RI_coeff(Enviroment& Enviro, MpiComm LIBBSE_MPI_COMM);
     
 }// namespace LibBSE
 

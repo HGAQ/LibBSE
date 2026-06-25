@@ -12,7 +12,8 @@ find_package(OpenMP REQUIRED)
 add_executable(LibBSE
     driver/main.cpp
     src/RI/Chi_0.cpp
-    src/RI/LibBSE_Chi_0.cpp
+    src/RI/LibBSE_RI_M.cpp
+    src/RI/LibBSE_RI_coeff.cpp
     src/io/Read_aims_output.cpp
     src/io/LibBSE_io.cpp
     src/mpi/LibBSE_mpi.cpp
