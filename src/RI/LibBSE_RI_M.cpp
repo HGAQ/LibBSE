@@ -226,7 +226,11 @@ namespace LibBSE{
         while(task_lb < task_ub){
             const int ik = task_lb / n_atom_pair;
             const int atom_pair_lb = task_lb % n_atom_pair;
-            const int next_k_task_ub = std::min<int>(task_ub, ik + 1 * n_atom_pair);
+            // task_lb/task_ub are linear indices in (k_point, atom_pair).
+            // Stop at the end of the current k point before opening the next
+            // task, otherwise one task can silently span two k points.
+            const int next_k_task_ub =
+                std::min<int>(task_ub, (ik + 1) * n_atom_pair);
             const int atom_pair_ub = next_k_task_ub - ik * n_atom_pair;
 
             task curr_task;
@@ -350,18 +354,32 @@ namespace LibBSE{
         const int mpi_size = Comm.LibBSE_MPI_size();
         const int mpi_rank = Comm.LibBSE_MPI_rank();
 
+        // Group this rank's real-space RI blocks by atom pair.  A reduced
+        // task owns an atom-pair range, so each send buffer must only collect
+        // the RI blocks belonging to the current atom pair.
+        std::vector<std::vector<const RIBlock*>> local_blocks_by_atom_pair(n_atom_pair);
+        for(const auto& curr_RI_block: Envir.local_RI_coeff){
+            const int block_index =
+                curr_RI_block.i_atom * Envir.n_atom + curr_RI_block.j_atom;
+            if(block_index < 0 || block_index >= n_atom_pair){
+                throw std::runtime_error("LibBSE[Chi0_BSE]: RI block atom index is invalid");
+            }
+            if(curr_RI_block.value.size != atom_pair_count[block_index]){
+                throw std::runtime_error("LibBSE[Chi0_BSE]: RI block value size mismatch in task build");
+            }
+            local_blocks_by_atom_pair[block_index].push_back(&curr_RI_block);
+        }
+
         // loacl function to cpy data from MPI_reduce
         auto copy_task_to_output =
             [&](const int itask, const task& curr_task, 
                 const std::vector<double>& task_real, const std::vector<double>& task_imag)
             {
-                const int task_offset =
-                    atom_pair_offset[curr_task.atom_pair_lb];
+                const int task_offset = atom_pair_offset[curr_task.atom_pair_lb];
                 for(int iatom = curr_task.atom_pair_lb; iatom < curr_task.atom_pair_ub; iatom ++){
                     const int count = atom_pair_count[iatom];
                     const int local_row = task_atom_pair_row[itask][iatom];
-                    const int local_offset_ll = atom_pair_offset[iatom] - task_offset;
-                    const int local_offset = static_cast<int>(local_offset_ll);
+                    const int local_offset = atom_pair_offset[iatom] - task_offset;
                     double* target_real = RI_coeff_k_real[iatom].matrix_ptr + local_row * count;
                     double* target_imag = RI_coeff_k_imag[iatom].matrix_ptr + local_row * count;
                     for(int icol = 0; icol < count; ++icol){
@@ -373,12 +391,16 @@ namespace LibBSE{
 
         LibBSE_printf_root(Comm, "RI-k uses MPI tasks on k_point * atom_pair ranges.\n");
 
-        // All ranks must follow this exact recorded_task/task order, otherwise
-        // MPI_Reduce collectives would be called in different orders.  Only
-        // task_rank stores the reduced task row.
+        // All ranks must follow the same task_rank/rank_task order.  MPI_Reduce
+        // is collective over Comm, so iterating this rank's recorded_task here
+        // would make ranks call different counts/order and can hang.  rank_task
+        // is rebuilt deterministically; only task_rank stores the reduced row.
         for(int task_rank = 0; task_rank < mpi_size; ++task_rank){
-            for(int itask = 0; itask < recorded_task.size(); ++itask){
-                const task& curr_task = recorded_task[itask];
+            std::vector<task> rank_task;
+            allocate_task_for_rank(Envir, mpi_size, task_rank, rank_task);
+
+            for(int itask = 0; itask < static_cast<int>(rank_task.size()); ++itask){
+                const task& curr_task = rank_task[itask];
                 const int ik = curr_task.task_k_point - 1;
                 if(ik < 0 || ik >= n_kpoint){
                     throw std::runtime_error("LibBSE[Chi0_BSE]: task k point is outside k-point list");
@@ -390,12 +412,11 @@ namespace LibBSE{
                 }
 
                 const int task_offset = atom_pair_offset[curr_task.atom_pair_lb];
-                const int task_count_ll = atom_pair_offset[curr_task.atom_pair_ub] - task_offset;
-                if(task_count_ll <= 0
-                || task_count_ll > std::numeric_limits<int>::max()){
+                const int task_count =
+                    atom_pair_offset[curr_task.atom_pair_ub] - task_offset;
+                if(task_count <= 0){
                     throw std::runtime_error("LibBSE[Chi0_BSE]: task size is invalid for MPI_Reduce");
                 }
-                const int task_count = static_cast<int>(task_count_ll);
 
                 std::vector<double> send_real(task_count, 0.0);
                 std::vector<double> send_imag(task_count, 0.0);
@@ -405,10 +426,10 @@ namespace LibBSE{
                     double* send_real_ptr = send_real.data() + local_offset;
                     double* send_imag_ptr = send_imag.data() + local_offset;
 
-                    for(const RIBlock curr_RI_block: Envir.local_RI_coeff){
-                        const double phase_real = std::cos(curr_RI_block.angle_vect(0,ik));
-                        const double phase_imag = std::sin(curr_RI_block.angle_vect(0,ik));
-                        const double* value_ptr = curr_RI_block.value.matrix_ptr;
+                    for(const RIBlock* curr_RI_block: local_blocks_by_atom_pair[iatom]){
+                        const double phase_real = std::cos(curr_RI_block->angle_vect(0,ik));
+                        const double phase_imag = std::sin(curr_RI_block->angle_vect(0,ik));
+                        const double* value_ptr = curr_RI_block->value.matrix_ptr;
                         for(int icol = 0; icol < count; ++icol){
                             send_real_ptr[icol] += phase_real * value_ptr[icol];
                             send_imag_ptr[icol] += phase_imag * value_ptr[icol];
