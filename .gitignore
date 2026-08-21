@@ -1,1 +1,3 @@
-build/
+/build*/
+/libbse.in
+/libbse.d/
