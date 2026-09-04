@@ -131,23 +131,93 @@ void MolecularLri::build_wavefunctions()
     for (std::size_t i = 0; i != atom_sizes.size(); ++i)
         offsets[i + 1] = offsets[i] + atom_sizes[i];
 
+    const int selected_bands = options_.nocc + options_.nvirt;
+    const int basis_size = static_cast<int>(offsets.back());
+
+    // ABACUS fixes the otherwise arbitrary phase of every Bloch state against
+    // the same band at the first k point before constructing either the BSE
+    // kernel or the velocity matrix.  Reproduce that gauge here.  The first-k
+    // reference can reside on a different MPI rank from the current LibRI
+    // task, so broadcast one complete copy before the local k-point loop.
+    std::vector<Complex> reference(
+        static_cast<std::size_t>(selected_bands) * basis_size, Complex{});
+    const auto *reference_wavefunctions = dataset_.mf_band.find_wfc(0, 0, 0);
+    int rank = 0;
+    int mpi_size = 1;
+    MPI_Comm_rank(dataset_.comm_h.comm, &rank);
+    MPI_Comm_size(dataset_.comm_h.comm, &mpi_size);
+    const int owner_candidate = reference_wavefunctions == nullptr
+                                    ? mpi_size : rank;
+    int reference_owner = mpi_size;
+    MPI_Allreduce(&owner_candidate, &reference_owner, 1, MPI_INT, MPI_MIN,
+                  dataset_.comm_h.comm);
+    if (reference_owner == mpi_size)
+        throw std::runtime_error(
+            "the first-k reference wavefunction is absent on every MPI rank");
+    if (rank == reference_owner)
+    {
+        if (qp_.ncore + selected_bands > reference_wavefunctions->nr
+            || basis_size != reference_wavefunctions->nc)
+            throw std::runtime_error(
+                "reference wavefunction dimensions do not cover BSE bands");
+        for (int ib = 0; ib != selected_bands; ++ib)
+            for (int iw = 0; iw != basis_size; ++iw)
+                reference[static_cast<std::size_t>(ib) * basis_size + iw]
+                    = (*reference_wavefunctions)(qp_.ncore + ib, iw);
+    }
+    MPI_Bcast(reference.data(), static_cast<int>(reference.size()),
+              MPI_C_DOUBLE_COMPLEX, reference_owner, dataset_.comm_h.comm);
+
     for (const int ik : lr_.k_indices)
     {
-        const auto *wavefunctions = dataset_.mf_band.find_wfc(0, 0, ik);
+        auto *wavefunctions = dataset_.mf_band.find_wfc(0, 0, ik);
         if (wavefunctions == nullptr)
             throw std::runtime_error("fine-grid wavefunction is missing at k-point "
                                      + std::to_string(ik));
         if (qp_.ncore + options_.nocc + options_.nvirt > wavefunctions->nr
             || static_cast<int>(offsets.back()) != wavefunctions->nc)
             throw std::runtime_error("fine-grid wavefunction dimensions do not cover BSE bands");
+        std::vector<Complex> phases(static_cast<std::size_t>(selected_bands),
+                                    Complex(1.0, 0.0));
+        if (ik != 0)
+        {
+            // For each band n, use
+            //   p_n(k) = <psi_n(k)|psi_n(0)> / |<psi_n(k)|psi_n(0)>|
+            // and replace psi_n(k) by p_n(k) psi_n(k).  Its overlap with the
+            // reference is then real and positive.  A is related between
+            // gauges by a similarity transform, which hides this mismatch in
+            // TDA eigenvalues, whereas the full-BSE B block and its Cholesky
+            // reduction require exactly the same gauge convention as ABACUS.
+            for (int ib = 0; ib != selected_bands; ++ib)
+            {
+                Complex overlap{};
+                for (int iw = 0; iw != basis_size; ++iw)
+                    overlap += std::conj((*wavefunctions)(qp_.ncore + ib, iw))
+                               * reference[static_cast<std::size_t>(ib)
+                                           * basis_size + iw];
+                const double magnitude = std::abs(overlap);
+                if (magnitude == 0.0)
+                    throw std::runtime_error(
+                        "cannot align a BSE wavefunction with the k=0 phase reference");
+                phases[static_cast<std::size_t>(ib)] = overlap / magnitude;
+            }
+            // Keep the Dataset and LibRI copies in one gauge.  The Dataset is
+            // subsequently reused for AO-to-MO velocity transformation, so
+            // correcting only lr_.map_psi would leave spectra inconsistent
+            // with the Hamiltonian eigenvectors.
+            for (int ib = 0; ib != selected_bands; ++ib)
+                for (int iw = 0; iw != basis_size; ++iw)
+                    (*wavefunctions)(qp_.ncore + ib, iw)
+                        *= phases[static_cast<std::size_t>(ib)];
+        }
         for (std::size_t iat = 0; iat != atom_sizes.size(); ++iat)
         {
             RI::Tensor<Complex> tensor(
                 {static_cast<std::size_t>(options_.nocc + options_.nvirt), atom_sizes[iat]});
             for (int ib = 0; ib != options_.nocc + options_.nvirt; ++ib)
                 for (std::size_t iw = 0; iw != atom_sizes[iat]; ++iw)
-                    tensor(ib, iw) = (*wavefunctions)(qp_.ncore + ib,
-                                                     static_cast<int>(offsets[iat] + iw));
+                    tensor(ib, iw) = (*wavefunctions)(
+                        qp_.ncore + ib, static_cast<int>(offsets[iat] + iw));
             lr_.map_psi[ik][static_cast<int>(iat)] = std::move(tensor);
         }
     }
