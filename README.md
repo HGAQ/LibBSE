@@ -24,11 +24,11 @@ Compile command example:
 ```sh
 cd LibBSE
 cmake -S . -B build \
-  -DCMAKE_CXX_COMPILER=mpiicpx \
-  -DEXTERNAL_ELPA_DIR=/opt/elpa_2025.06.001-install \
+  -DCMAKE_CXX_COMPILER=mpicxx \
+  -DEXTERNAL_ELPA_DIR=/work/users/l/s/lsr/b_BSE/elpa-2024.05.001/build/install \
   -DCEREAL_INCLUDE_DIR=../LibRPA/thirdparty/cereal-1.3.0/include \
   -DLIBRPA_INCLUDE_DIR=../LibRPA/include \
-  -DLIBRI_INCLUDE_DIR=../LibRI/include \
+  -DLIBRI_INCLUDE_DIR=/work/users/l/s/lsr/LibBSE/1_LibBSE/LibRI/LibRI/include \
   -DLIBCOMM_INCLUDE_DIR=../LibRPA/thirdparty/LibComm/include
 cmake --build build -j 8
 ctest --test-dir build --output-on-failure

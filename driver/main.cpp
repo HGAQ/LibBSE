@@ -15,31 +15,31 @@
 namespace
 {
 
-const char *mpi_thread_level_name(int level)
-{
-    switch (level)
+    const char *mpi_thread_level_name(int level)
     {
-        case MPI_THREAD_SINGLE: return "MPI_THREAD_SINGLE";
-        case MPI_THREAD_FUNNELED: return "MPI_THREAD_FUNNELED";
-        case MPI_THREAD_SERIALIZED: return "MPI_THREAD_SERIALIZED";
-        case MPI_THREAD_MULTIPLE: return "MPI_THREAD_MULTIPLE";
-        default: return "unknown";
+        switch (level)
+        {
+            case MPI_THREAD_SINGLE: return "MPI_THREAD_SINGLE";
+            case MPI_THREAD_FUNNELED: return "MPI_THREAD_FUNNELED";
+            case MPI_THREAD_SERIALIZED: return "MPI_THREAD_SERIALIZED";
+            case MPI_THREAD_MULTIPLE: return "MPI_THREAD_MULTIPLE";
+            default: return "unknown";
+        }
     }
-}
-
-void print_parallel_configuration(int mpi_size, int mpi_thread_level)
-{
-    std::cout << "LibBSE parallel configuration\n"
-              << "  MPI processes: " << mpi_size << '\n'
-              << "  MPI thread level requested: MPI_THREAD_FUNNELED\n"
-              << "  MPI thread level provided: "
-              << mpi_thread_level_name(mpi_thread_level) << '\n'
-              << "  OpenMP max threads per MPI process: "
-              << omp_get_max_threads() << '\n'
-              << "  OpenMP available processors: " << omp_get_num_procs() << '\n'
-              << "  OpenMP dynamic adjustment: "
-              << (omp_get_dynamic() ? "enabled" : "disabled") << '\n';
-}
+    
+    void print_parallel_configuration(int mpi_size, int mpi_thread_level)
+    {
+        std::cout << "LibBSE parallel configuration\n"
+                  << "  MPI processes: " << mpi_size << '\n'
+                  << "  MPI thread level requested: MPI_THREAD_FUNNELED\n"
+                  << "  MPI thread level provided: "
+                  << mpi_thread_level_name(mpi_thread_level) << '\n'
+                  << "  OpenMP max threads per MPI process: "
+                  << omp_get_max_threads() << '\n'
+                  << "  OpenMP available processors: " << omp_get_num_procs() << '\n'
+                  << "  OpenMP dynamic adjustment: "
+                  << (omp_get_dynamic() ? "enabled" : "disabled") << '\n';
+    }
 
 } // namespace
 
