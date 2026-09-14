@@ -62,6 +62,51 @@ int main()
         if (!close(complex_full[0], {-1.25 * std::sqrt(2.0), 0.0}))
             throw std::runtime_error("velocity-gauge conjugation is incorrect");
 
+        const std::vector<double> energies_ry{0.5};
+        const auto strengths = libbse::calculate_oscillator_strengths(
+            energies_ry, std::vector<std::array<libbse::Complex, 3>>{
+                             {{{1.0, 0.0}, {2.0, 0.0}, {0.0, 0.0}}}},
+            2);
+        if (strengths.size() != 1
+            || std::abs(strengths[0].directional[0] - 1.0) > 1.0e-13
+            || std::abs(strengths[0].directional[1] - 4.0) > 1.0e-13
+            || std::abs(strengths[0].isotropic - 5.0 / 3.0) > 1.0e-13)
+            throw std::runtime_error("oscillator-strength prefactor is incorrect");
+
+        // A band-gauge change psi_n -> p_n psi_n gives
+        // v_ia -> p_a conj(p_i) v_ia.  The resonant and anti-resonant
+        // amplitudes transform oppositely, so the full-BSE dipole must remain
+        // invariant when all three objects are transformed together.
+        velocity.values[velocity_index(0)] = {0.3, -0.4};
+        velocity.gaps_ha[0] = 0.5;
+        const libbse::Complex gauge = std::polar(1.0, 0.73);
+        const std::vector<libbse::Complex> native_x{{0.2, 0.6}};
+        const std::vector<libbse::Complex> native_y{{-0.1, 0.25}};
+        const auto native_dipole = libbse::velocity_gauge_transition_dipole(
+            0, options, velocity, native_x, &native_y);
+        velocity.values[velocity_index(0)] *= gauge;
+        const std::vector<libbse::Complex> gauged_x{
+            native_x[0] * std::conj(gauge)};
+        const std::vector<libbse::Complex> gauged_y{
+            native_y[0] * gauge};
+        const auto gauged_dipole = libbse::velocity_gauge_transition_dipole(
+            0, options, velocity, gauged_x, &gauged_y);
+        if (!close(gauged_dipole[0], native_dipole[0]))
+            throw std::runtime_error("full-BSE band-gauge covariance is broken");
+
+        options.spectrum_broadening_ev = 0.2;
+        options.spectrum_energy_step_ev = 0.2;
+        options.spectrum_energy_min_ev = strengths[0].energy_ev;
+        options.spectrum_energy_max_ev = strengths[0].energy_ev;
+        const auto spectrum
+            = libbse::broaden_oscillator_spectrum(options, strengths);
+        const double expected_peak
+            = strengths[0].isotropic
+              / (libbse::PARAM.constants.pi * options.spectrum_broadening_ev);
+        if (spectrum.size() != 1
+            || std::abs(spectrum[0].isotropic - expected_peak) > 1.0e-13)
+            throw std::runtime_error("Lorentz-broadened spectrum is incorrect");
+
         bool rejected_zero_gap = false;
         velocity.gaps_ha[0] = 0.0;
         try

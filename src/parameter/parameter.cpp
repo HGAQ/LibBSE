@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <map>
 #include <set>
@@ -45,6 +46,25 @@ int parse_integer(const std::string &key, const std::string &value)
     }
     if (!trim(value.substr(consumed)).empty())
         throw std::invalid_argument("invalid integer for " + key + ": " + value);
+    return result;
+}
+
+double parse_double(const std::string &key, const std::string &value)
+{
+    std::size_t consumed = 0;
+    double result = 0.0;
+    try
+    {
+        result = std::stod(value, &consumed);
+    }
+    catch (const std::exception &)
+    {
+        throw std::invalid_argument("invalid real value for " + key + ": "
+                                    + value);
+    }
+    if (!trim(value.substr(consumed)).empty())
+        throw std::invalid_argument("invalid real value for " + key + ": "
+                                    + value);
     return result;
 }
 
@@ -174,6 +194,13 @@ void Parameter::parse(const std::string &contents, const fs::path &base_director
     };
     if (auto value = take("input_dir"); !value.empty()) inp.input_dir = value;
     if (auto value = take("output_dir"); !value.empty()) inp.output_dir = value;
+    if (auto value = take("input_format"); !value.empty())
+        inp.input_format = lower(value);
+    if (auto value = take("qp_data"); !value.empty()) inp.qp_data = value;
+    if (auto value = take("qp_format"); !value.empty())
+        inp.qp_format = lower(value);
+    if (auto value = take("screened_dir"); !value.empty())
+        inp.screened_dir = value;
     if (auto value = take("bse_nstates"); !value.empty())
         inp.bse_nstates = parse_integer("bse_nstates", value);
     if (auto value = take("nocc"); !value.empty()) inp.nocc = parse_integer("nocc", value);
@@ -193,6 +220,20 @@ void Parameter::parse(const std::string &contents, const fs::path &base_director
     if (auto value = take("out_bse_ab"); !value.empty())
         inp.out_bse_ab = parse_boolean("out_bse_ab", value);
     if (auto value = take("abs_gauge"); !value.empty()) inp.abs_gauge = lower(value);
+    if (auto value = take("wavefunction_gauge"); !value.empty())
+        inp.wavefunction_gauge = lower(value);
+    if (auto value = take("spectrum_broadening_ev"); !value.empty())
+        inp.spectrum_broadening_ev
+            = parse_double("spectrum_broadening_ev", value);
+    if (auto value = take("spectrum_energy_step_ev"); !value.empty())
+        inp.spectrum_energy_step_ev
+            = parse_double("spectrum_energy_step_ev", value);
+    if (auto value = take("spectrum_energy_min_ev"); !value.empty())
+        inp.spectrum_energy_min_ev
+            = parse_double("spectrum_energy_min_ev", value);
+    if (auto value = take("spectrum_energy_max_ev"); !value.empty())
+        inp.spectrum_energy_max_ev
+            = parse_double("spectrum_energy_max_ev", value);
 
     if (!assignments.empty())
         throw std::invalid_argument("unknown LibBSE input parameter: "
@@ -204,16 +245,29 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
 {
     inp.input_dir = trim(inp.input_dir);
     inp.output_dir = trim(inp.output_dir);
+    inp.input_format = lower(trim(inp.input_format));
+    inp.qp_data = trim(inp.qp_data);
+    inp.qp_format = lower(trim(inp.qp_format));
+    inp.screened_dir = trim(inp.screened_dir);
     inp.bse_solver = lower(trim(inp.bse_solver));
     for (std::string &spin_type : inp.bse_spin_types)
         spin_type = lower(trim(spin_type));
     inp.bse_tda = lower(trim(inp.bse_tda));
     inp.abs_gauge = lower(trim(inp.abs_gauge));
+    inp.wavefunction_gauge = lower(trim(inp.wavefunction_gauge));
 
     if (inp.input_dir.empty())
         throw std::invalid_argument("input_dir is required in libbse.in");
     if (inp.output_dir.empty())
         throw std::invalid_argument("output_dir must not be empty");
+    if (inp.input_format != "auto" && inp.input_format != "librpa"
+        && inp.input_format != "fhi_aims")
+        throw std::invalid_argument(
+            "input_format must be auto, librpa, or fhi_aims");
+    if (inp.qp_format != "auto" && inp.qp_format != "energy_qp"
+        && inp.qp_format != "fine_band")
+        throw std::invalid_argument(
+            "qp_format must be auto, energy_qp, or fine_band");
     if (inp.nocc <= 0 || inp.nvirt <= 0
         || inp.bse_nstates == 0 || inp.bse_nstates < -1)
         throw std::invalid_argument("invalid nocc, nvirt, or bse_nstates");
@@ -245,6 +299,22 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
         throw std::invalid_argument("out_bse_ab is not implemented in LibBSE");
     if (inp.abs_gauge != "velocity")
         throw std::invalid_argument("LibBSE supports only abs_gauge velocity");
+    if (inp.wavefunction_gauge != "auto"
+        && inp.wavefunction_gauge != "native"
+        && inp.wavefunction_gauge != "first_k")
+        throw std::invalid_argument(
+            "wavefunction_gauge must be auto, native, or first_k");
+    if (!std::isfinite(inp.spectrum_broadening_ev)
+        || !std::isfinite(inp.spectrum_energy_step_ev)
+        || !std::isfinite(inp.spectrum_energy_min_ev)
+        || !std::isfinite(inp.spectrum_energy_max_ev)
+        || inp.spectrum_broadening_ev <= 0.0
+        || inp.spectrum_energy_step_ev <= 0.0
+        || inp.spectrum_energy_min_ev < 0.0
+        || (inp.spectrum_energy_max_ev >= 0.0
+            && inp.spectrum_energy_max_ev < inp.spectrum_energy_min_ev))
+        throw std::invalid_argument(
+            "invalid optical-spectrum energy grid or broadening");
 
     fs::path input_path(inp.input_dir);
     if (input_path.is_relative()) input_path = base_directory / input_path;
@@ -253,6 +323,16 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
     fs::path output_path(inp.output_dir);
     if (output_path.is_relative()) output_path = base_directory / output_path;
     inp.output_dir = fs::absolute(output_path).lexically_normal().string();
+
+    fs::path qp_path(inp.qp_data.empty() ? inp.input_dir : inp.qp_data);
+    if (qp_path.is_relative()) qp_path = base_directory / qp_path;
+    inp.qp_data = fs::absolute(qp_path).lexically_normal().string();
+
+    fs::path screened_path = inp.screened_dir.empty()
+        ? fs::path(inp.input_dir).parent_path() / "librpa.d"
+        : fs::path(inp.screened_dir);
+    if (screened_path.is_relative()) screened_path = base_directory / screened_path;
+    inp.screened_dir = fs::absolute(screened_path).lexically_normal().string();
 }
 
 void Parameter::print(std::ostream &output) const
@@ -260,6 +340,10 @@ void Parameter::print(std::ostream &output) const
     output << "LibBSE input parameters\n"
            << "  input_dir: " << inp.input_dir << '\n'
            << "  output_dir: " << inp.output_dir << '\n'
+           << "  input_format: " << inp.input_format << '\n'
+           << "  qp_data: " << inp.qp_data << '\n'
+           << "  qp_format: " << inp.qp_format << '\n'
+           << "  screened_dir: " << inp.screened_dir << '\n'
            << "  bse_nstates: " << inp.bse_nstates << '\n'
            << "  nocc: " << inp.nocc << '\n'
            << "  nvirt: " << inp.nvirt << '\n'
@@ -272,7 +356,16 @@ void Parameter::print(std::ostream &output) const
            << "  bse_ri_hartree: " << inp.bse_ri_hartree << '\n'
            << "  bse_use_fine_kgrid: " << inp.bse_use_fine_kgrid << '\n'
            << "  bse_q_approx_mode: " << inp.bse_q_approx_mode << '\n'
-           << "  abs_gauge: " << inp.abs_gauge << '\n';
+           << "  abs_gauge: " << inp.abs_gauge << '\n'
+           << "  wavefunction_gauge: " << inp.wavefunction_gauge << '\n'
+           << "  spectrum_broadening_ev: "
+           << inp.spectrum_broadening_ev << '\n'
+           << "  spectrum_energy_step_ev: "
+           << inp.spectrum_energy_step_ev << '\n'
+           << "  spectrum_energy_min_ev: "
+           << inp.spectrum_energy_min_ev << '\n'
+           << "  spectrum_energy_max_ev: "
+           << inp.spectrum_energy_max_ev << '\n';
 }
 
 } // namespace libbse

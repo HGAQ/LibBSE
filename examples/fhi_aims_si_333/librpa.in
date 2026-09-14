@@ -1,0 +1,28 @@
+task = g0w0
+input_dir = aims_export
+output_dir = librpa.d
+# Zero-based, half-open state interval covering Si bands 11--18. Restricting
+# the QP solver to the BSE window also avoids irrelevant deep/high-state roots.
+i_state_low = 10
+i_state_high = 18
+nfreq = 16
+tfgrids_type = minimax
+parallel_routing = libri
+option_dielect_func = 0
+option_qpe_solver = 2
+replace_w_head = t
+# control.in uses inversion only, so q/-q is recovered by conjugation from
+# bz_sampling_out. Point-group symmetry restoration is intentionally off;
+# it would require both use_symmetry_gw and use_symmetry_exx.
+vq_threshold = 0
+sqrt_coulomb_threshold = 1e-8
+use_shrink_abfs = f
+use_shrink_chi = f
+
+# LibBSE consumes both products of this standalone G0W0 calculation. It never
+# reads FHI-aims GW_band*.out files.
+output_energy_qp = t
+
+# LibBSE consumes the lowest-frequency static-limit correlation part Wc = W - V.
+output_wc_rf = t
+ifreq_output_wc_end = 1

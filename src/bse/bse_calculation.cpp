@@ -333,6 +333,20 @@ void diagnose_b_component(const std::vector<Complex> &matrix,
                   << (check.passed ? "PASS" : "FAIL") << '\n';
 }
 
+void diagnose_a_component(const std::vector<Complex> &matrix,
+                          const librpa_int::ArrayDesc &descriptor,
+                          const char *name, int rank)
+{
+    if (!b_symmetry_diagnostics_enabled() || matrix.empty()) return;
+    if (rank == 0)
+        std::cout << "|  A-Hermiticity diagnostic component: " << name << '\n';
+    const MatrixCheckResult check = check_hermitian(
+        matrix, descriptor, PARAM.constants.matrix_symmetry_threshold);
+    if (rank == 0)
+        std::cout << "|   component status: "
+                  << (check.passed ? "PASS" : "FAIL") << '\n';
+}
+
 void diagnose_b_k_blocks(const std::vector<Complex> &matrix,
                          const librpa_int::ArrayDesc &descriptor,
                          int pair_dimension,
@@ -470,6 +484,12 @@ void run_bse(const InputParameters &options,
                   << qp.direct_gap_ry * PARAM.constants.ry_to_ev << '\n';
     }
 
+    // Apply the band gauge once, before either Hamiltonian construction or a
+    // spectrum-only restart.  Keep the phases so a separately supplied
+    // same-grid velocity matrix can be transformed covariantly as well.
+    const auto band_gauge_phases
+        = apply_wavefunction_gauge(*dataset, options, qp);
+
     const int dimension = qp.nk * options.nocc * options.nvirt;
     const int nstates = options.bse_nstates < 0 ? dimension : options.bse_nstates;
     if (nstates > dimension)
@@ -484,7 +504,8 @@ void run_bse(const InputParameters &options,
         {
             ScopedTimer timer(global::profiler, "prepare_velocity_mo",
                               "Prepare fine-grid velocity_mo");
-            return prepare_fine_velocity_mo(options, qp, dataset);
+            return prepare_fine_velocity_mo(
+                options, qp, dataset, band_gauge_phases);
         }();
         done("prepare velocity matrix in MO representation",
              dataset->comm_h.comm);
@@ -595,7 +616,8 @@ void run_bse(const InputParameters &options,
         {
             ScopedTimer timer(global::profiler, "prepare_velocity_mo",
                               "Prepare fine-grid velocity_mo");
-            return prepare_fine_velocity_mo(options, qp, dataset);
+            return prepare_fine_velocity_mo(
+                options, qp, dataset, band_gauge_phases);
         }();
         done("prepare velocity matrix in MO representation",
              dataset->comm_h.comm);
@@ -695,6 +717,7 @@ void run_bse(const InputParameters &options,
             molecular.add_hartree_a(hartree_a, descriptor, 1.0);
         }
         done("construct Hartree contribution for A", dataset->comm_h.comm);
+        diagnose_a_component(hartree_a, descriptor, "Hartree A", rank);
     }
     if (options.requires_screened())
     {
@@ -704,6 +727,7 @@ void run_bse(const InputParameters &options,
             molecular.add_screened_a(screened_a, descriptor, 1.0);
         }
         done("construct screened contribution for A", dataset->comm_h.comm);
+        diagnose_a_component(screened_a, descriptor, "screened A", rank);
     }
     if (options.solve_full() && options.requires_hartree())
     {
@@ -936,7 +960,8 @@ void run_bse(const InputParameters &options,
     {
         ScopedTimer timer(global::profiler, "prepare_velocity_mo",
                           "Prepare fine-grid velocity_mo");
-        return prepare_fine_velocity_mo(options, qp, dataset);
+        return prepare_fine_velocity_mo(
+            options, qp, dataset, band_gauge_phases);
     }();
     done("prepare velocity matrix in MO representation",
          dataset->comm_h.comm);

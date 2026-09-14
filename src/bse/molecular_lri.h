@@ -14,6 +14,16 @@
 namespace libbse
 {
 
+// Put the fine-grid KS states in the producer-compatible band gauge and
+// return p_n(k) for psi_n(k) -> p_n(k) psi_n(k).  The returned phases are
+// replicated on every MPI rank in (k, selected-band) order so observables
+// built from a separately supplied MO operator can be transformed with the
+// same gauge.
+std::vector<Complex> apply_wavefunction_gauge(
+    librpa_int::Dataset &dataset,
+    const InputParameters &options,
+    const QuasiparticleBands &qp);
+
 class MolecularLri
 {
 public:

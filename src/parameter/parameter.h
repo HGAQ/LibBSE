@@ -30,6 +30,10 @@ struct InputParameters
     // Names exposed in libbse.in
     std::string input_dir;
     std::string output_dir = "libbse.d";
+    std::string input_format = "auto";
+    std::string qp_data;
+    std::string qp_format = "auto";
+    std::string screened_dir;
     int bse_nstates = -1;
     int nocc = 4;
     int nvirt = 4;
@@ -42,6 +46,12 @@ struct InputParameters
     int bse_q_approx_mode = 0;
     bool out_bse_ab = false;
     std::string abs_gauge = "velocity";
+    std::string wavefunction_gauge = "auto";
+    double spectrum_broadening_ev = 0.10;
+    double spectrum_energy_step_ev = 0.01;
+    double spectrum_energy_min_ev = 0.0;
+    // A negative maximum selects max(excitation energy) + 5*broadening.
+    double spectrum_energy_max_ev = -1.0;
 
     bool solve_tda() const noexcept;
     bool solve_full() const noexcept;

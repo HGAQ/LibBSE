@@ -1,4 +1,5 @@
 #include "io/bse_files.h"
+#include "io/fhi_aims_adapter.h"
 
 #include <librpa_file_reader.hpp>
 #include <mpi.h>
@@ -69,6 +70,63 @@ void test_coarse_qp_reader(const fs::path &input_dir)
         throw std::runtime_error("coarse-grid quasiparticle gap is incorrect");
 }
 
+void test_aims_reader_view(const fs::path &input_dir, const fs::path &output_dir)
+{
+    {
+        std::ofstream basis(input_dir / "basis_out");
+        basis << "1 1 1 aims\n";
+        std::ofstream band(input_dir / "band_out");
+        band << "2\n1\n3\n1\n";
+        std::ofstream coulomb(input_dir / "coulomb_cut_0.txt");
+        coulomb << "test\n";
+    }
+    {
+        std::ofstream velocity(input_dir / "velocity_matrix",
+                               std::ios::binary);
+        velocity << "canonical velocity fixture\n";
+    }
+    libbse::InputParameters options;
+    options.input_dir = input_dir.string();
+    options.output_dir = output_dir.string();
+    libbse::resolve_input_format(options);
+    if (options.input_format != "fhi_aims"
+        || options.wavefunction_gauge != "native")
+        throw std::runtime_error("FHI-aims input auto-detection failed");
+    const fs::path view = libbse::prepare_fhi_aims_reader_view(
+        MPI_COMM_WORLD, options);
+    if (!fs::is_symlink(view / "coulomb_unshrinked_cut_0.txt")
+        || !fs::is_symlink(view / "velocity_matrix")
+        || fs::file_size(view / "velocity_matrix") == 0)
+        throw std::runtime_error("FHI-aims reader compatibility view is incomplete");
+}
+
+void test_aims_reader_rejects_missing_velocity(
+    const fs::path &input_dir, const fs::path &output_dir)
+{
+    fs::create_directories(input_dir);
+    {
+        std::ofstream basis(input_dir / "basis_out");
+        basis << "1 1 1 aims\n";
+        std::ofstream band(input_dir / "band_out");
+        band << "1\n1\n2\n1\n";
+    }
+    libbse::InputParameters options;
+    options.input_dir = input_dir.string();
+    options.output_dir = output_dir.string();
+    bool rejected = false;
+    try
+    {
+        (void)libbse::prepare_fhi_aims_reader_view(MPI_COMM_WORLD, options);
+    }
+    catch (const std::runtime_error &)
+    {
+        rejected = true;
+    }
+    if (!rejected)
+        throw std::runtime_error(
+            "FHI-aims input without velocity data was not rejected");
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -86,6 +144,10 @@ int main(int argc, char **argv)
         fs::create_directories(wc_dir);
 
         test_coarse_qp_reader(input_dir);
+        test_aims_reader_view(input_dir, root / "adapter_output");
+        test_aims_reader_rejects_missing_velocity(
+            root / "missing_velocity_input",
+            root / "missing_velocity_output");
 
         libbse::TensorMap<libbse::Complex> bare;
         const libbse::Cell cell{0, 0, 0};

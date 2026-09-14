@@ -1,0 +1,19 @@
+task = g0w0
+input_dir = OUT.librpa
+output_dir = librpa.d
+nfreq = 16
+tfgrids_type = minimax
+parallel_routing = libri
+
+option_dielect_func = 3
+replace_w_head = t
+use_scalapack_gw_wc = t
+vq_threshold = 0
+sqrt_coulomb_threshold = 0
+use_shrink_abfs = t
+use_shrink_chi = f
+
+# LibBSE requires both the QP energies and the lowest-frequency Wc blocks.
+output_energy_qp = t
+output_wc_rf = t
+ifreq_output_wc_end = 1

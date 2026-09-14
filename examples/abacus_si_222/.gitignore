@@ -1,0 +1,10 @@
+/INPUT
+/OUT.*/
+/librpa.d/
+/libbse.d/
+/energy_qp
+/*.out
+/*.err
+/Si_ONCV_PBE-1.0.upf
+/Si_gga_8au_100Ry_3s3p2d.orb
+/Si_3s3p2d1f1g_pca1e-6.abfs
