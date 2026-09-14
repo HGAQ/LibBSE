@@ -1,4 +1,5 @@
 #include "librpa_api.h"
+#include "io/fhi_aims_adapter.h"
 
 #include <stdexcept>
 #include <vector>
@@ -20,12 +21,25 @@ void finalize()
 std::shared_ptr<librpa_int::Dataset> read_dataset(
     MPI_Comm comm, const ReaderOptions &options)
 {
+    std::string reader_input = options.input_dir;
+    if (options.input_format == "fhi_aims")
+    {
+        libbse::InputParameters adapter_options;
+        adapter_options.input_dir = options.input_dir;
+        adapter_options.output_dir = options.output_dir;
+        reader_input = libbse::prepare_fhi_aims_reader_view(
+                           comm, adapter_options).string();
+    }
+
     librpa::FileReaderOptions reader_options;
-    reader_options.input_dir = options.input_dir;
+    reader_options.input_dir = reader_input;
     reader_options.cs_threshold = libbse::PARAM.constants.cs_threshold;
     reader_options.coulomb_threshold = libbse::PARAM.constants.coulomb_threshold;
     reader_options.read_ri = options.read_ri;
     reader_options.read_band_data = options.read_band_data;
+    // velocity_matrix is deliberately unconditional in the public LibRPA
+    // reader.  Every LibBSE mode, including IPA and spectrum restart, produces
+    // optical output and therefore follows the same data contract.
     return librpa::read_dataset_from_files(comm, reader_options);
 }
 

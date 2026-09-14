@@ -1,5 +1,6 @@
 #include "bse/bse_calculation.h"
 #include "interface/librpa_api.h"
+#include "io/fhi_aims_adapter.h"
 #include "parameter/parameter.h"
 #include "utils/profiler.h"
 #include "utils/progress.h"
@@ -68,6 +69,7 @@ int main(int argc, char **argv)
             libbse::ScopedTimer timer(libbse::global::profiler,
                                       "read_parameters", "Read libbse.in");
             libbse::PARAM.read();
+            libbse::resolve_input_format(libbse::PARAM.inp);
         }
         if (rank == 0) libbse::PARAM.print(std::cout);
 
@@ -81,6 +83,8 @@ int main(int argc, char **argv)
 
         LibRPA_API::ReaderOptions reader_options;
         reader_options.input_dir = libbse::PARAM.inp.input_dir;
+        reader_options.output_dir = libbse::PARAM.inp.output_dir;
+        reader_options.input_format = libbse::PARAM.inp.input_format;
         reader_options.read_ri = !libbse::PARAM.inp.spectrum_only()
                                  && !libbse::PARAM.inp.ipa_only();
         reader_options.read_band_data

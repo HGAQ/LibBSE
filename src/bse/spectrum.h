@@ -29,13 +29,39 @@ struct FineVelocityMo
     std::vector<double> gaps_ha;
 };
 
+struct OscillatorStrength
+{
+    double energy_ev = 0.0;
+    // Cartesian ABACUS-Ry oscillator strengths and orientational average.
+    std::array<double, 3> directional{};
+    double isotropic = 0.0;
+};
+
+struct SpectrumPoint
+{
+    double energy_ev = 0.0;
+    // Lorentz-broadened oscillator-strength density in eV^-1.
+    std::array<double, 3> directional{};
+    double isotropic = 0.0;
+};
+
+std::vector<OscillatorStrength> calculate_oscillator_strengths(
+    const std::vector<double> &energies_ry,
+    const std::vector<std::array<Complex, 3>> &dipoles,
+    int kpoint_count);
+
+std::vector<SpectrumPoint> broaden_oscillator_spectrum(
+    const InputParameters &options,
+    const std::vector<OscillatorStrength> &strengths);
+
 // Return the velocity matrix elements needed by the locally owned BSE pairs.
 // When the SCF and BSE grids coincide this selects the supplied velocity_mo
 // directly; otherwise it interpolates the operator through its localized
 // AO/R form and sends each pair only to its excitation-amplitude owner.
 FineVelocityMo prepare_fine_velocity_mo(
     const InputParameters &options, const QuasiparticleBands &qp,
-    const std::shared_ptr<librpa_int::Dataset> &dataset);
+    const std::shared_ptr<librpa_int::Dataset> &dataset,
+    const std::vector<Complex> &band_gauge_phases);
 
 std::array<Complex, 3> velocity_gauge_transition_dipole(
     int state, const InputParameters &options, const FineVelocityMo &velocity_mo,

@@ -16,6 +16,8 @@ void finalize();
 struct ReaderOptions
 {
     std::string input_dir;
+    std::string output_dir;
+    std::string input_format = "librpa";
     bool read_ri = true;
     bool read_band_data = true;
 };

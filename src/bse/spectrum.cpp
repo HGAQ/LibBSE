@@ -95,6 +95,41 @@ void write_dipoles(const fs::path &file, const std::vector<double> &energies,
     }
 }
 
+void write_oscillator_strengths(
+    const fs::path &file,
+    const std::vector<OscillatorStrength> &strengths)
+{
+    std::ofstream output(file);
+    if (!output) throw std::runtime_error("cannot write " + file.string());
+    output << "# Velocity-gauge oscillator strengths (ABACUS Ry convention)\n"
+           << "# state energy_eV f_x f_y f_z f_isotropic\n"
+           << std::scientific << std::setprecision(12);
+    for (std::size_t state = 0; state != strengths.size(); ++state)
+    {
+        const auto &value = strengths[state];
+        output << state << ' ' << value.energy_ev << ' '
+               << value.directional[0] << ' ' << value.directional[1] << ' '
+               << value.directional[2] << ' ' << value.isotropic << '\n';
+    }
+}
+
+void write_spectrum(const fs::path &file,
+                    const std::vector<SpectrumPoint> &spectrum,
+                    double broadening_ev)
+{
+    std::ofstream output(file);
+    if (!output) throw std::runtime_error("cannot write " + file.string());
+    output << "# Lorentz-broadened oscillator-strength density (eV^-1)\n"
+           << "# half_width_eV " << std::setprecision(12)
+           << broadening_ev << '\n'
+           << "# energy_eV S_x S_y S_z S_isotropic\n"
+           << std::scientific << std::setprecision(12);
+    for (const auto &point : spectrum)
+        output << point.energy_ev << ' ' << point.directional[0] << ' '
+               << point.directional[1] << ' ' << point.directional[2]
+               << ' ' << point.isotropic << '\n';
+}
+
 void validate_velocity_mo(const InputParameters &options,
                           const FineVelocityMo &velocity_mo)
 {
@@ -243,6 +278,85 @@ void broadcast_vector(std::vector<T> &values, MPI_Datatype datatype,
 
 } // namespace
 
+std::vector<OscillatorStrength> calculate_oscillator_strengths(
+    const std::vector<double> &energies_ry,
+    const std::vector<std::array<Complex, 3>> &dipoles,
+    int kpoint_count)
+{
+    if (energies_ry.size() != dipoles.size() || kpoint_count <= 0)
+        throw std::invalid_argument(
+            "invalid excitation energies, dipoles, or k-point count");
+    std::vector<OscillatorStrength> result(energies_ry.size());
+    for (std::size_t state = 0; state != energies_ry.size(); ++state)
+    {
+        if (!std::isfinite(energies_ry[state]) || energies_ry[state] < 0.0)
+            throw std::invalid_argument(
+                "oscillator strength requires non-negative excitation energies");
+        auto &strength = result[state];
+        strength.energy_ev
+            = energies_ry[state] * PARAM.constants.ry_to_ev;
+        for (int direction = 0; direction != 3; ++direction)
+        {
+            // Match ABACUS trans_analysis: its reported per-state quantity is
+            // 2 Omega_Ry |d_alpha|^2.  This is an extensive sampled-supercell
+            // Ry convention, not the intensive dimensionless oscillator
+            // strength.  The sum-rule normalization is applied separately.
+            strength.directional[direction]
+                = 2.0 * energies_ry[state]
+                  * std::norm(dipoles[state][direction]);
+        }
+        strength.isotropic
+            = (strength.directional[0] + strength.directional[1]
+               + strength.directional[2]) / 3.0;
+    }
+    return result;
+}
+
+std::vector<SpectrumPoint> broaden_oscillator_spectrum(
+    const InputParameters &options,
+    const std::vector<OscillatorStrength> &strengths)
+{
+    const double gamma = options.spectrum_broadening_ev;
+    const double minimum = options.spectrum_energy_min_ev;
+    double maximum = options.spectrum_energy_max_ev;
+    if (maximum < 0.0)
+    {
+        maximum = minimum;
+        for (const auto &strength : strengths)
+            maximum = std::max(maximum, strength.energy_ev);
+        maximum += 5.0 * gamma;
+    }
+    if (gamma <= 0.0 || options.spectrum_energy_step_ev <= 0.0
+        || maximum < minimum)
+        throw std::invalid_argument("invalid optical-spectrum grid");
+
+    const double span = maximum - minimum;
+    const double raw_points = span / options.spectrum_energy_step_ev;
+    if (raw_points > 1.0e7)
+        throw std::overflow_error("optical-spectrum grid is too large");
+    const std::size_t npoints
+        = static_cast<std::size_t>(std::floor(raw_points + 1.0e-12)) + 1;
+    std::vector<SpectrumPoint> result(npoints);
+    for (std::size_t index = 0; index != npoints; ++index)
+    {
+        auto &point = result[index];
+        point.energy_ev = minimum
+                          + index * options.spectrum_energy_step_ev;
+        for (const auto &strength : strengths)
+        {
+            const double difference = point.energy_ev - strength.energy_ev;
+            const double lorentzian
+                = gamma / (PARAM.constants.pi
+                           * (difference * difference + gamma * gamma));
+            for (int direction = 0; direction != 3; ++direction)
+                point.directional[direction]
+                    += strength.directional[direction] * lorentzian;
+            point.isotropic += strength.isotropic * lorentzian;
+        }
+    }
+    return result;
+}
+
 std::array<Complex, 3> velocity_gauge_transition_dipole(
     int state, const InputParameters &options, const FineVelocityMo &velocity_mo,
     const std::vector<Complex> &amplitudes_x,
@@ -284,7 +398,8 @@ std::vector<std::array<Complex, 3>> velocity_gauge_transition_dipoles_mpi(
 
 FineVelocityMo prepare_fine_velocity_mo(
     const InputParameters &options, const QuasiparticleBands &qp,
-    const std::shared_ptr<librpa_int::Dataset> &dataset)
+    const std::shared_ptr<librpa_int::Dataset> &dataset,
+    const std::vector<Complex> &band_gauge_phases)
 {
     int rank = 0;
     int mpi_size = 1;
@@ -295,9 +410,13 @@ FineVelocityMo prepare_fine_velocity_mo(
     const int fine_nk = dataset->mf_band.get_n_kpoints();
     const int pair_dimension = options.nocc * options.nvirt;
     const int dimension = fine_nk * pair_dimension;
+    const int selected_bands = options.nocc + options.nvirt;
     if (dataset->velocity_matrix.size() != 1
         || static_cast<int>(dataset->velocity_matrix[0].size()) != coarse_nk)
         throw std::runtime_error("coarse-grid velocity matrix was not loaded");
+    if (band_gauge_phases.size()
+        != static_cast<std::size_t>(fine_nk) * selected_bands)
+        throw std::invalid_argument("invalid fine-grid band-gauge phase table");
 
     const int last_band = qp.ncore + options.nocc + options.nvirt;
     const auto &eigenvalues = dataset->mf_band.get_eigenvals()[0];
@@ -351,9 +470,21 @@ FineVelocityMo prepare_fine_velocity_mo(
                     throw std::runtime_error(
                         "velocity_mo does not contain the selected BSE bands");
                 // velocity_mo stores <column|v|row>.
+                // If psi_n -> p_n psi_n, then
+                // <i|v|a> -> p_a conj(p_i) <i|v|a>.  The BSE amplitudes were
+                // built from the gauged fine-grid wavefunctions, whereas the
+                // supplied same-grid velocity matrix remains in its producer
+                // gauge, so apply the missing covariant factor here.
+                const Complex gauge_factor
+                    = band_gauge_phases[
+                          static_cast<std::size_t>(ik) * selected_bands
+                          + options.nocc + a]
+                      * std::conj(band_gauge_phases[
+                          static_cast<std::size_t>(ik) * selected_bands + i]);
                 result.values[velocity_index(
                     direction, local_pair, partition.count)]
-                    = matrix(qp.ncore + options.nocc + a, qp.ncore + i);
+                    = gauge_factor
+                      * matrix(qp.ncore + options.nocc + a, qp.ncore + i);
             }
         }
         return result;
@@ -707,24 +838,41 @@ void write_velocity_gauge_outputs(
                 MPI_C_DOUBLE_COMPLEX, 0, dataset.comm_h.comm);
     if (rank != 0) return;
 
-    std::vector<double> means(static_cast<std::size_t>(nstates));
-    std::vector<double> oscillator_strengths(static_cast<std::size_t>(nstates));
-    for (int state = 0; state < nstates; ++state)
+    // The electric-dipole operator is spin independent. From a singlet ground
+    // state, every triplet excitation is therefore optically forbidden. Keep
+    // the output files present for the uniform all-calculations contract, but
+    // write the physically required zero strengths instead of the spatial
+    // contraction that omits the spin factor.
+    if (spin_type == "triplet")
     {
-        means[state] = mean_squared(dipoles[state]);
-        oscillator_strengths[state] = 2.0 * all_energies[state] * means[state];
+        for (auto &dipole : dipoles) dipole = {};
+        std::fill(weight2.begin(), weight2.end(), 0.0);
     }
+
+    std::vector<double> means(static_cast<std::size_t>(nstates));
+    for (int state = 0; state < nstates; ++state)
+        means[state] = mean_squared(dipoles[state]);
+    const auto oscillator_strengths
+        = calculate_oscillator_strengths(all_energies, dipoles, velocity.nk);
     const double oscillator_sum = std::accumulate(
-        oscillator_strengths.begin(), oscillator_strengths.end(), 0.0)
-                                  / (4.0 * velocity.nk * options.nocc);
+        oscillator_strengths.begin(), oscillator_strengths.end(), 0.0,
+        [](double sum, const OscillatorStrength &value)
+        { return sum + value.isotropic; })
+        / (4.0 * velocity.nk * options.nocc);
     const std::string label = spin_type + "_" + solution_type;
     std::cout << "Total oscillator strength (" << label << ") = "
               << std::setprecision(10) << oscillator_sum << '\n';
 
     const fs::path output_dir(options.output_dir);
-    if (spin_type != "triplet")
-        write_dipoles(output_dir / ("trans_dipole_" + label + ".dat"),
-                      all_energies, dipoles, means);
+    write_dipoles(output_dir / ("trans_dipole_" + label + ".dat"),
+                  all_energies, dipoles, means);
+    write_oscillator_strengths(
+        output_dir / ("oscillator_strength_" + label + ".dat"),
+        oscillator_strengths);
+    write_spectrum(
+        output_dir / ("spectrum_" + label + ".dat"),
+        broaden_oscillator_spectrum(options, oscillator_strengths),
+        options.spectrum_broadening_ev);
 
     std::ofstream analysis(output_dir / ("trans_analysis_" + label + ".dat"));
     std::ofstream kweight(output_dir / ("trans_kweight_" + label + ".dat"));
@@ -742,7 +890,8 @@ void write_velocity_gauge_outputs(
                  << all_energies[state] * PARAM.constants.ry_to_ev
                  << std::setprecision(4) << std::setw(30) << dipoles[state][0]
                  << std::setw(30) << dipoles[state][1] << std::setw(30) << dipoles[state][2]
-                 << std::setprecision(6) << std::setw(30) << oscillator_strengths[state] << '\n';
+                 << std::setprecision(6) << std::setw(30)
+                 << oscillator_strengths[state].isotropic << '\n';
     analysis << "------------------------------------------------------------------------------------ \n"
              << std::setw(8) << "State" << std::setw(20) << "Occupied orbital"
              << std::setw(20) << "Virtual orbital" << std::setw(30) << "Excitation amplitude"

@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(LibBSE LANGUAGES CXX Fortran)
+set(CMAKE_CXX_EXTENSIONS OFF)
+# GCC's GNU mode exposes the C99 imaginary-unit macro `I`, which collides with
+# long-standing LibRPA atom-index names.  Request strict C++17 for this whole
+# source tree, including the embedded LibRPA build.
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)
 
 set(CEREAL_INCLUDE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/../LibRPA/thirdparty/cereal-1.3.0/include"
@@ -54,6 +59,7 @@ add_library(libbse_core
   src/bse/spectrum.cpp
   src/interface/librpa_api.cpp
   src/io/bse_files.cpp
+  src/io/fhi_aims_adapter.cpp
   src/parameter/parameter.cpp
   src/utils/profiler.cpp
   src/utils/progress.cpp
@@ -74,6 +80,8 @@ target_link_libraries(LibBSE PRIVATE libbse_core)
 option(LIBBSE_BUILD_TESTING "Build LibBSE tests" ON)
 if(LIBBSE_BUILD_TESTING)
   enable_testing()
+
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
   add_test(NAME LibBSE_reject_command_line
     COMMAND $<TARGET_FILE:LibBSE> unexpected_argument)
@@ -112,6 +120,10 @@ if(LIBBSE_BUILD_TESTING)
   add_executable(test_bse_files tests/test_bse_files.cpp)
   target_link_libraries(test_bse_files PRIVATE libbse_core)
   add_test(NAME LibBSE_bse_files COMMAND test_bse_files)
+
+  add_test(NAME LibBSE_aims_mommat_converter
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_aims_mommat_to_velocity.py)
 
   add_executable(test_molecular_lri_comm
     tests/test_molecular_lri_comm.cpp)

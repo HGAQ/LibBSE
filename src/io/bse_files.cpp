@@ -36,120 +36,213 @@ void move_tensor(TensorMap<Complex> &map, int iat, int jat,
     blocks.erase(old_iter);
 }
 
-void store_requested_bands(QuasiparticleBands &result,
-                           int ik, const std::vector<double> &energies_ry)
+struct QpRecord
 {
-    if (static_cast<int>(energies_ry.size()) < result.nbands)
-        throw std::runtime_error("not enough occupied/virtual quasiparticle bands at k-point "
-                                 + std::to_string(ik + 1));
+    KPoint k{};
+    std::vector<double> occupations;
+    std::vector<double> energies_ry;
+    std::string source;
+    double occupation_scale = 1.0;
+};
 
-    const int ncore_here = static_cast<int>(energies_ry.size()) - result.nbands;
-    if (ik == 0) result.ncore = ncore_here;
+double periodic_coordinate_distance(double left, double right)
+{
+    const double difference = left - right;
+    return std::abs(difference - std::round(difference));
+}
+
+int match_kpoint(const KPoint &k,
+                 const std::vector<librpa_int::Vector3_Order<double>> &grid,
+                 double tolerance, const std::string &source)
+{
+    int match = -1;
+    for (int ik = 0; ik != static_cast<int>(grid.size()); ++ik)
+    {
+        const auto &candidate = grid[static_cast<std::size_t>(ik)];
+        if (periodic_coordinate_distance(k[0], candidate.x) <= tolerance
+            && periodic_coordinate_distance(k[1], candidate.y) <= tolerance
+            && periodic_coordinate_distance(k[2], candidate.z) <= tolerance)
+        {
+            if (match >= 0)
+                throw std::runtime_error("ambiguous periodic k-point in " + source);
+            match = ik;
+        }
+    }
+    if (match < 0)
+        throw std::runtime_error("QP k-point is absent from the BSE grid: " + source);
+    return match;
+}
+
+int wavefunction_core_offset(const librpa_int::Dataset &dataset,
+                             int ik, int nocc, int record_offset)
+{
+    // LibRPA QP files may contain only the calculated valence/conduction
+    // window, while band_out and KS eigenvectors also contain core states.
+    // Mean-field occupations therefore determine the wavefunction row offset.
+    // Synthetic inputs without occupations retain the QP-record offset.
+    int highest_occupied = -1;
+    const double stored_weight_tolerance
+        = PARAM.constants.occupation_tolerance
+          / dataset.mf_band.get_n_kpoints();
+    const auto &weights = dataset.mf_band.get_weight().at(0);
+    for (int ib = 0; ib != dataset.mf_band.get_n_bands(); ++ib)
+        if (weights(ik, ib) > stored_weight_tolerance)
+            highest_occupied = ib;
+    if (highest_occupied < 0) return record_offset;
+    const int offset = highest_occupied + 1 - nocc;
+    if (offset < 0)
+        throw std::runtime_error("mean-field data contain fewer occupied bands than nocc");
+    return offset;
+}
+
+void store_requested_bands(QuasiparticleBands &result, int ik,
+                           const QpRecord &record,
+                           const InputParameters &options,
+                           const librpa_int::Dataset &dataset)
+{
+    if (record.occupations.size() != record.energies_ry.size())
+        throw std::runtime_error("inconsistent QP record columns in " + record.source);
+    const auto first_virtual = std::find_if(
+        record.occupations.begin(), record.occupations.end(),
+        [&record](double occupation)
+        {
+            return occupation * record.occupation_scale
+                   < PARAM.constants.occupation_tolerance;
+        });
+    const int occupied_count = static_cast<int>(
+        std::distance(record.occupations.begin(), first_virtual));
+    if (occupied_count < options.nocc
+        || static_cast<int>(record.energies_ry.size())
+               < occupied_count + options.nvirt)
+        throw std::runtime_error("not enough occupied/virtual QP bands in "
+                                 + record.source);
+    if (std::any_of(first_virtual, record.occupations.end(),
+                    [&record](double occupation)
+                    {
+                        return occupation * record.occupation_scale
+                               >= PARAM.constants.occupation_tolerance;
+                    }))
+        throw std::runtime_error("QP occupations are not an occupied-then-virtual window in "
+                                 + record.source);
+
+    const int record_offset = occupied_count - options.nocc;
+    const int ncore_here = wavefunction_core_offset(
+        dataset, ik, options.nocc, record_offset);
+    if (result.ncore < 0) result.ncore = ncore_here;
     if (ncore_here != result.ncore)
-        throw std::runtime_error("inconsistent core-band count in quasiparticle data");
+        throw std::runtime_error("inconsistent wavefunction core-band offset in QP data");
 
     for (int ib = 0; ib != result.nbands; ++ib)
     {
         const std::size_t dst = static_cast<std::size_t>(ik) * result.nbands + ib;
         result.energies_ry[dst]
-            = energies_ry[static_cast<std::size_t>(result.ncore + ib)];
+            = record.energies_ry[static_cast<std::size_t>(record_offset + ib)];
     }
+}
+
+QuasiparticleBands assign_qp_records(
+    const std::vector<QpRecord> &records,
+    const InputParameters &options,
+    const librpa_int::Dataset &dataset,
+    double tolerance)
+{
+    QuasiparticleBands result;
+    result.ncore = -1;
+    result.nk = dataset.mf_band.get_n_kpoints();
+    result.nbands = options.nocc + options.nvirt;
+    result.energies_ry.resize(static_cast<std::size_t>(result.nk) * result.nbands);
+    std::vector<bool> assigned(static_cast<std::size_t>(result.nk), false);
+    for (const QpRecord &record : records)
+    {
+        const int ik = match_kpoint(record.k, dataset.kfrac_band_list,
+                                    tolerance, record.source);
+        if (assigned[static_cast<std::size_t>(ik)])
+            throw std::runtime_error("duplicate QP data for BSE k-point "
+                                     + std::to_string(ik + 1));
+        store_requested_bands(result, ik, record, options, dataset);
+        assigned[static_cast<std::size_t>(ik)] = true;
+    }
+    const auto missing = std::find(assigned.begin(), assigned.end(), false);
+    if (missing != assigned.end())
+        throw std::runtime_error("missing QP data for BSE k-point "
+                                 + std::to_string(std::distance(assigned.begin(), missing) + 1));
+    return result;
+}
+
+fs::path data_file(const InputParameters &options, const char *default_name)
+{
+    const fs::path path(options.qp_data.empty() ? options.input_dir
+                                                : options.qp_data);
+    return fs::is_directory(path) ? path / default_name : path;
 }
 
 QuasiparticleBands read_fine_qp_bands(const InputParameters &options,
                                       const librpa_int::Dataset &dataset)
 {
-    const fs::path file = fs::path(options.input_dir) / "GW_band_spin_1.dat";
+    const fs::path file = data_file(options, "GW_band_spin_1.dat");
     std::ifstream input(file);
     if (!input) throw std::runtime_error("cannot open GW band file: " + file.string());
 
-    QuasiparticleBands result;
-    result.nk = dataset.mf_band.get_n_kpoints();
-    result.nbands = options.nocc + options.nvirt;
-    result.energies_ry.resize(static_cast<std::size_t>(result.nk) * result.nbands);
-
+    std::vector<QpRecord> records;
     std::string line;
-    for (int ik = 0; ik != result.nk; ++ik)
+    int line_number = 0;
+    while (std::getline(input, line))
     {
-        if (!std::getline(input, line))
-            throw std::runtime_error("GW band file ended before k-point " + std::to_string(ik + 1));
-        if (line.empty())
-        {
-            --ik;
-            continue;
-        }
+        ++line_number;
+        if (line.empty()) continue;
         std::istringstream parser(line);
         int index = 0;
-        KPoint k{};
-        if (!(parser >> index >> k[0] >> k[1] >> k[2]) || index != ik + 1)
+        QpRecord record;
+        record.source = file.string() + ":" + std::to_string(line_number);
+        // The historical GW_band_spin file stores occupations including the
+        // uniform k weight.  Undo that convention only for this format.
+        record.occupation_scale = dataset.mf_band.get_n_kpoints();
+        if (!(parser >> index >> record.k[0] >> record.k[1] >> record.k[2]))
             throw std::runtime_error("invalid k-point header in " + file.string());
-        const auto &expected = dataset.kfrac_band_list.at(static_cast<std::size_t>(ik));
-        if (std::abs(k[0] - expected.x) > PARAM.constants.band_file_kpoint_tolerance
-            || std::abs(k[1] - expected.y) > PARAM.constants.band_file_kpoint_tolerance
-            || std::abs(k[2] - expected.z) > PARAM.constants.band_file_kpoint_tolerance)
-            throw std::runtime_error("GW band k-point does not match the fine BSE grid at index "
-                                     + std::to_string(ik + 1));
-
-        std::vector<double> energies;
         double occupation = 0.0;
         double energy_ev = 0.0;
-        int virtual_count = 0;
         while (parser >> occupation >> energy_ev)
         {
-            energies.push_back(energy_ev / PARAM.constants.ry_to_ev);
-            if (occupation * result.nk < PARAM.constants.occupation_tolerance)
-                ++virtual_count;
-            if (virtual_count == options.nvirt) break;
+            record.occupations.push_back(occupation);
+            record.energies_ry.push_back(energy_ev / PARAM.constants.ry_to_ev);
         }
-        if (virtual_count != options.nvirt)
-            throw std::runtime_error("not enough virtual GW bands at k-point "
-                                     + std::to_string(ik + 1));
-        store_requested_bands(result, ik, energies);
+        records.push_back(std::move(record));
     }
-    return result;
+    return assign_qp_records(records, options, dataset,
+                             PARAM.constants.band_file_kpoint_tolerance);
 }
 
 QuasiparticleBands read_coarse_qp_bands(const InputParameters &options,
                                         const librpa_int::Dataset &dataset)
 {
-    const fs::path file = fs::path(options.input_dir) / "energy_qp";
+    const fs::path file = data_file(options, "energy_qp");
     std::ifstream input(file);
     if (!input)
         throw std::runtime_error("cannot open coarse-grid quasiparticle file: "
                                  + file.string());
 
-    QuasiparticleBands result;
-    result.nk = dataset.mf_band.get_n_kpoints();
-    result.nbands = options.nocc + options.nvirt;
-    result.energies_ry.resize(static_cast<std::size_t>(result.nk) * result.nbands);
-
+    std::vector<QpRecord> records;
     std::string line;
-    int ik = 0;
-    while (ik != result.nk && std::getline(input, line))
+    int line_number = 0;
+    while (std::getline(input, line))
     {
+        ++line_number;
         if (line.find("K_point") == std::string::npos) continue;
 
         std::istringstream header(line);
         std::string label;
         char colon = '\0';
         int index = 0;
-        KPoint k{};
-        if (!(header >> label >> index >> colon >> k[0] >> k[1] >> k[2])
-            || label != "K_point" || colon != ':' || index != ik + 1)
+        QpRecord record;
+        record.source = file.string() + ":" + std::to_string(line_number);
+        if (!(header >> label >> index >> colon
+                     >> record.k[0] >> record.k[1] >> record.k[2])
+            || label != "K_point" || colon != ':')
             throw std::runtime_error("invalid k-point header in " + file.string());
-
-        const auto &expected = dataset.kfrac_band_list.at(static_cast<std::size_t>(ik));
-        if (std::abs(k[0] - expected.x) > PARAM.constants.energy_qp_kpoint_tolerance
-            || std::abs(k[1] - expected.y) > PARAM.constants.energy_qp_kpoint_tolerance
-            || std::abs(k[2] - expected.z) > PARAM.constants.energy_qp_kpoint_tolerance)
-            throw std::runtime_error("energy_qp k-point does not match the coarse BSE grid at index "
-                                     + std::to_string(ik + 1));
-
-        std::vector<double> energies;
-        int virtual_count = 0;
         bool saw_state = false;
         while (std::getline(input, line))
         {
+            ++line_number;
             const auto first = line.find_first_not_of(" \t\r");
             if (first == std::string::npos) continue;
             if (line[first] == '-')
@@ -166,19 +259,16 @@ QuasiparticleBands read_coarse_qp_bands(const InputParameters &options,
             if (!(state_line >> state >> occupation >> ks_energy_ha >> qp_energy_ha))
                 continue;
             saw_state = true;
-            energies.push_back(qp_energy_ha * PARAM.constants.ha_to_ry);
-            if (occupation < PARAM.constants.occupation_tolerance) ++virtual_count;
-            if (virtual_count == options.nvirt) break;
+            record.occupations.push_back(occupation);
+            record.energies_ry.push_back(
+                qp_energy_ha * PARAM.constants.ha_to_ry);
         }
-        if (virtual_count != options.nvirt)
-            throw std::runtime_error("not enough virtual quasiparticle bands at k-point "
-                                     + std::to_string(ik + 1));
-        store_requested_bands(result, ik, energies);
-        ++ik;
+        if (!saw_state)
+            throw std::runtime_error("empty QP block in " + record.source);
+        records.push_back(std::move(record));
     }
-    if (ik != result.nk)
-        throw std::runtime_error("energy_qp ended before k-point " + std::to_string(ik + 1));
-    return result;
+    return assign_qp_records(records, options, dataset,
+                             PARAM.constants.energy_qp_kpoint_tolerance);
 }
 
 void calculate_gaps(QuasiparticleBands &result, const InputParameters &options)
@@ -207,9 +297,29 @@ void calculate_gaps(QuasiparticleBands &result, const InputParameters &options)
 QuasiparticleBands read_qp_bands(const InputParameters &options,
                                  const librpa_int::Dataset &dataset)
 {
-    QuasiparticleBands result = options.bse_use_fine_kgrid == 0
-        ? read_coarse_qp_bands(options, dataset)
-        : read_fine_qp_bands(options, dataset);
+    std::string format = options.qp_format;
+    if (format == "auto")
+    {
+        const fs::path path(options.qp_data.empty() ? options.input_dir
+                                                    : options.qp_data);
+        if (fs::is_regular_file(path / "energy_qp")
+            || (fs::is_regular_file(path) && path.filename() == "energy_qp"))
+            format = "energy_qp";
+        else if (options.bse_use_fine_kgrid == 1)
+            format = "fine_band";
+        else
+            throw std::runtime_error(
+                "cannot find LibRPA energy_qp; FHI-aims quasiparticle files "
+                "are intentionally unsupported");
+    }
+    QuasiparticleBands result;
+    if (format == "energy_qp")
+        result = read_coarse_qp_bands(options, dataset);
+    else if (format == "fine_band")
+        result = read_fine_qp_bands(options, dataset);
+    else
+        throw std::invalid_argument("unsupported quasiparticle format: "
+                                    + format);
     calculate_gaps(result, options);
     return result;
 }
@@ -233,7 +343,9 @@ TensorMap<Complex> read_screened_interaction(
     const std::vector<int> &local_j_atoms)
 {
     TensorMap<Complex> screened;
-    const fs::path wc_dir = fs::path(options.input_dir).parent_path() / "librpa.d";
+    const fs::path wc_dir = options.screened_dir.empty()
+        ? fs::path(options.input_dir).parent_path() / "librpa.d"
+        : fs::path(options.screened_dir);
     for (const int iat : local_i_atoms)
     {
         for (const int jat : local_j_atoms)
@@ -287,6 +399,11 @@ TensorMap<Complex> read_screened_interaction(
                         throw std::runtime_error("invalid MatrixMarket entry in " + file.string());
                     tensor(row - 1, col - 1) = Complex(re, im);
                 }
+                // LibRPA writes the correlation part Wc = W - V.  At the
+                // lowest minimax imaginary-frequency node used here, Fourier
+                // linearity gives W(R,iw0) = V(R) + Wc(R,iw0).  This is the
+                // static-limit real-space interaction contracted by LibRI in
+                // the direct electron-hole kernel.
                 tensor += bare_iter->second;
                 screened[iat][{jat, r}] = std::move(tensor);
             }

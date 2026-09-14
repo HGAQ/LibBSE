@@ -19,6 +19,9 @@ ctest --test-dir build-bse --output-on-failure
   `output_dir=libbse.d`.
 - `test_coarse_kgrid_mode()` checks that `bse_use_fine_kgrid=0` selects the
   SCF coarse-grid calculation path.
+- The whitespace-separated test also checks the producer, QP source,
+  screened-data, spectrum, and wavefunction-gauge controls used by the
+  FHI-aims path.
 - `test_invalid_or_unsupported_parameters_are_rejected()` checks rejection of
   length gauge, unsupported or duplicate spin types, invalid pure-IPA and
   k-grid modes, unknown or obsolete keywords, and malformed integer values.
@@ -32,7 +35,9 @@ ctest --test-dir build-bse --output-on-failure
   minimal locally owned electron-hole pair.
 - `main()` checks the TDA `vX/gap` contraction, the full-BSE
   `-conj(v)Y/gap` term, complex conjugation for imaginary velocity elements,
-  and rejection of a zero Kohn-Sham gap.
+  rejection of a zero Kohn-Sham gap, the directional/isotropic oscillator
+  prefactor including `1/Nk`, and the peak of the normalized Lorentzian
+  spectrum.
 
 ## `test_profiler.cpp`
 
@@ -63,6 +68,15 @@ ctest --test-dir build-bse --output-on-failure
 - `test_coarse_qp_reader()` checks that `bse_use_fine_kgrid = 0` reads
   `energy_qp`, converts Hartree energies to Rydberg, skips core states, and
   computes direct and indirect gaps on the coarse grid.
+- `test_aims_reader_view()` checks producer detection, Coulomb-name and
+  pre-converted velocity symlinks, and the non-destructive reader view. A
+  separate case verifies that missing velocity input is rejected.
+
+## `test_aims_mommat_to_velocity.py`
+
+- Uses a nonsymmetric `(kz,ky,kx) = (2,1,3)` fixture to check the Fortran HDF5
+  grid-axis correction, packed upper-triangle mapping, Hermitian
+  reconstruction, unit conversion, and binary-v1 output layout.
 - `write_wc()` creates one minimal MatrixMarket Wc block for a selected atom
   pair.
 - `main()` supplies a complete bare-Coulomb map but creates only the Wc file
