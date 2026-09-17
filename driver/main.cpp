@@ -16,6 +16,28 @@
 namespace
 {
 
+    void print_banner()
+    {
+        constexpr const char *green = "\033[38;5;29m";
+        constexpr const char *blue = "\033[38;5;25m";
+        constexpr const char *purple = "\033[38;5;54m";
+        constexpr const char *reset = "\033[0m";
+        std::cout << '\n'
+                  << green << "██╗     ██╗" << blue << "██" << reset
+                  << purple << "████╗ ███████╗███████╗" << reset << '\n'
+                  << green << "██║     ╚═╝" << blue << "██╔" << reset
+                  << purple << "══██╗██╔════╝██╔════╝" << reset << '\n'
+                  << green << "██║     ██║" << blue << "██████╔╝" << reset
+                  << purple << "███████╗█████╗  " << reset << '\n'
+                  << green << "██║     ██║" << blue << "██╔══██╗" << reset
+                  << purple << "╚════██║██╔══╝  " << reset << '\n'
+                  << green << "███████╗██║" << blue << "██████╔╝" << reset
+                  << purple << "███████║███████╗" << reset << '\n'
+                  << green << "╚══════╝╚═╝" << blue << "╚═════╝ " << reset
+                  << purple << "╚══════╝╚══════╝" << reset << "\n\n"
+                  << std::flush;
+    }
+
     const char *mpi_thread_level_name(int level)
     {
         switch (level)
@@ -52,6 +74,7 @@ int main(int argc, char **argv)
     int mpi_size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    if (rank == 0) print_banner();
     libbse::global::profiler.start("libbse_total", "Total LibBSE execution");
 
     int status = 0;
@@ -59,12 +82,13 @@ int main(int argc, char **argv)
     std::shared_ptr<librpa_int::Dataset> dataset;
     try
     {
+        // check if MPI provides the required thread level (MPI_THREAD_FUNNELED)
         if (provided < MPI_THREAD_FUNNELED)
             throw std::runtime_error("MPI does not provide MPI_THREAD_FUNNELED");
         if (argc != 1)
             throw std::invalid_argument(
                 "LibBSE takes no command-line parameters; configure ./libbse.in");
-
+        // read param file and initialize LibRPA
         {
             libbse::ScopedTimer timer(libbse::global::profiler,
                                       "read_parameters", "Read libbse.in");
@@ -81,6 +105,7 @@ int main(int argc, char **argv)
         librpa_initialized = true;
         if (rank == 0) print_parallel_configuration(mpi_size, provided);
 
+        // translate libbse.in options into LibRPA reader options
         LibRPA_API::ReaderOptions reader_options;
         reader_options.input_dir = libbse::PARAM.inp.input_dir;
         reader_options.output_dir = libbse::PARAM.inp.output_dir;
@@ -89,6 +114,7 @@ int main(int argc, char **argv)
                                  && !libbse::PARAM.inp.ipa_only();
         reader_options.read_band_data
             = libbse::PARAM.inp.bse_use_fine_kgrid == 1;
+        // read the dataset from the input files
         {
             libbse::ScopedTimer timer(libbse::global::profiler,
                                       "read_dataset", "Read calculation files with LibRPA");
@@ -108,6 +134,7 @@ int main(int argc, char **argv)
                       << "  Cs keys: " << dataset->cs_data.n_keys() << '\n'
                       << "  cut-Coulomb atom pairs: " << dataset->vq_cut.size() << '\n';
         }
+        // run the BSE calculation
         libbse::run_bse(libbse::PARAM.inp, dataset);
         libbse::done("LibBSE calculation", MPI_COMM_WORLD);
     }

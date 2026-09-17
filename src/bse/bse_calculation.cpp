@@ -468,6 +468,7 @@ void run_bse(const InputParameters &options,
     MPI_Comm_rank(dataset->comm_h.comm, &rank);
     fs::create_directories(options.output_dir);
 
+    // Read quasiparticle bands from the dataset and report the gaps.
     const auto qp = [&]()
     {
         ScopedTimer timer(global::profiler, "read_qp_bands",
@@ -495,7 +496,8 @@ void run_bse(const InputParameters &options,
     if (nstates > dimension)
         throw std::invalid_argument(
             "number of requested states exceeds the BSE dimension");
-
+    
+    //already have the velocity matrix in MO representation, just need to read it and calculate the spectrum
     if (options.spectrum_only())
     {
         if (rank == 0)
@@ -578,6 +580,7 @@ void run_bse(const InputParameters &options,
         return;
     }
 
+    
     if (options.ipa_only())
     {
         if (rank == 0)

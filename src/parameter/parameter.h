@@ -73,16 +73,16 @@ InteractionCoefficients interaction_coefficients(const std::string &spin_type);
 class Parameter
 {
   public:
-    InputParameters inp;
+    InputParameters inp; // store all input parameters read from libbse.in
     const Constants constants{};
 
-    void read(const std::filesystem::path &filename = Constants::input_filename);
+    void read(const std::filesystem::path &filename = Constants::input_filename);// then prase 
     void parse(const std::string &contents,
                const std::filesystem::path &base_directory = ".");
     void print(std::ostream &output) const;
 
   private:
-    void validate_and_resolve(const std::filesystem::path &base_directory);
+    void validate_and_resolve(const std::filesystem::path &base_directory); // add rule that check the input parameters and resolve the relative path to absolute path
 };
 
 extern Parameter PARAM;

@@ -140,6 +140,7 @@ fs::path prepare_fhi_aims_reader_view(MPI_Comm comm,
                 if (!fs::exists(target) && !fs::is_symlink(target))
                     create_source_link(entry.path(), target);
             }
+            //before run, use tools/aims_mommat_to_velocity.py to convert 
             install_velocity(source, view);
         }
         catch (const std::exception &error)

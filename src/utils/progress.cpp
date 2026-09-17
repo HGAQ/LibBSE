@@ -13,6 +13,7 @@ const auto program_start = std::chrono::steady_clock::now();
 
 } // namespace
 
+// Print a message indicating that a task has completed, along with the elapsed time since the program started.
 void done(const std::string &description, MPI_Comm comm)
 {
     int rank = 0;

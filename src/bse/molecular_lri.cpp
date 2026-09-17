@@ -60,16 +60,21 @@ int checked_total(const std::vector<int> &counts,
 
 } // namespace
 
+
+// Apply a wavefunction gauge to the dataset's wavefunctions, if requested by the options.
 std::vector<Complex> apply_wavefunction_gauge(
     librpa_int::Dataset &dataset,
     const InputParameters &options,
     const QuasiparticleBands &qp)
 {
+    // The wavefunction gauge is applied to the dataset's wavefunctions in-place, and
+    // the phases are returned for use in transforming a separately supplied velocity matrix.
     const int nk = dataset.mf_band.get_n_kpoints();
     const int selected_bands = options.nocc + options.nvirt;
     const int basis_size = dataset.mf_band.get_n_aos();
     std::vector<Complex> phases(
         static_cast<std::size_t>(nk) * selected_bands, Complex(1.0, 0.0));
+    // If the wavefunction gauge is not requested, return the default phases.
     const bool align_to_first_k = options.wavefunction_gauge == "first_k"
         || (options.wavefunction_gauge == "auto"
             && options.input_format != "fhi_aims");
@@ -79,7 +84,9 @@ std::vector<Complex> apply_wavefunction_gauge(
     int mpi_size = 1;
     MPI_Comm_rank(dataset.comm_h.comm, &rank);
     MPI_Comm_size(dataset.comm_h.comm, &mpi_size);
-
+    
+    // Determine which MPI rank owns the wavefunction for each k-point,
+    // and check that every k-point has an owner.
     std::vector<int> local_owners(static_cast<std::size_t>(nk), mpi_size);
     for (int ik = 0; ik != nk; ++ik)
         if (dataset.mf_band.find_wfc(0, 0, ik) != nullptr)
@@ -90,22 +97,25 @@ std::vector<Complex> apply_wavefunction_gauge(
     if (std::find(owners.begin(), owners.end(), mpi_size) != owners.end())
         throw std::runtime_error(
             "a fine-grid wavefunction is absent on every MPI rank");
-
+    // Broadcast the k=0 wavefunction to all ranks, and align the phases of all other k-points
+    // to the k=0 wavefunction.  
+    // The phases are stored in the returned vector, which is indexed by (ik * selected_bands + ib).
     std::vector<Complex> reference(
         static_cast<std::size_t>(selected_bands) * basis_size, Complex{});
-    if (rank == owners[0])
-    {
+    if (rank == owners[0]){
         const auto *wavefunctions = dataset.mf_band.find_wfc(0, 0, 0);
         if (wavefunctions == nullptr
             || qp.ncore + selected_bands > wavefunctions->nr
             || basis_size != wavefunctions->nc)
             throw std::runtime_error(
                 "reference wavefunction dimensions do not cover BSE bands");
+        // Copy the k=0 wavefunction for the selected bands into the reference array.
         for (int ib = 0; ib != selected_bands; ++ib)
             for (int iw = 0; iw != basis_size; ++iw)
                 reference[static_cast<std::size_t>(ib) * basis_size + iw]
                     = (*wavefunctions)(qp.ncore + ib, iw);
     }
+    // Broadcast the reference wavefunction to all ranks.
     MPI_Bcast(reference.data(), static_cast<int>(reference.size()),
               MPI_C_DOUBLE_COMPLEX, owners[0], dataset.comm_h.comm);
 
@@ -123,6 +133,8 @@ std::vector<Complex> apply_wavefunction_gauge(
             Complex band_phase(1.0, 0.0);
             if (ik != 0)
             {
+                // Align the phase of the wavefunction for this band to the reference wavefunction.
+                // The formula is: band_phase = <psi|phi> / |<psi|phi>|, where |phi> is the reference wavefunction
                 Complex overlap{};
                 for (int iw = 0; iw != basis_size; ++iw)
                     overlap += std::conj((*wavefunctions)(qp.ncore + ib, iw))
@@ -141,6 +153,7 @@ std::vector<Complex> apply_wavefunction_gauge(
                     = band_phase;
         }
     }
+    // Reduce the phases from the owner ranks to all ranks.
     MPI_Allreduce(owner_phases.data(), phases.data(),
                   static_cast<int>(phases.size()), MPI_C_DOUBLE_COMPLEX,
                   MPI_SUM, dataset.comm_h.comm);
