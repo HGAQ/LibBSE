@@ -4,11 +4,11 @@
 
 #include <mpi.h>
 
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
-#include <string>
 
 namespace libbse
 {
@@ -90,7 +90,11 @@ MatrixCheckResult check_matrix(const std::vector<Complex> &matrix,
                   << "|   ||" << matrix_name << " - " << matrix_name << '^'
                   << symbol << "||_F / ||" << matrix_name << " + "
                   << matrix_name << '^' << symbol << "||_F = "
-                  << result.relative_error << '\n';
+                  << result.relative_error << '\n'
+                  << "|  CHECK " << (result.passed ? "PASS" : "WARNING")
+                  << ": Matrix " << matrix_name << " is "
+                  << (conjugate ? "Hermitian" : "symmetric")
+                  << " under threshold " << threshold << '\n';
     }
     return result;
 }

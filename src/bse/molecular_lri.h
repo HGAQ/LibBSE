@@ -24,6 +24,7 @@ std::vector<Complex> apply_wavefunction_gauge(
     const InputParameters &options,
     const QuasiparticleBands &qp);
 
+// A class that manages the LibRI LR object for molecular BSE calculations.
 class MolecularLri
 {
 public:

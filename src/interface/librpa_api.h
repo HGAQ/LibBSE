@@ -28,6 +28,13 @@ std::shared_ptr<librpa_int::Dataset> read_dataset(
 libbse::TensorMap<libbse::Complex> build_bare_coulomb(
     librpa_int::Dataset &dataset);
 
+// Local atom-pair blocks keyed by Cartesian q in LibRPA's reciprocal units.
+using ScreenedQBlocks = librpa_int::atom_mapping<
+    std::map<librpa_int::Vector3_Order<double>, librpa_int::Matz>>::pair_t_old;
+libbse::TensorMap<libbse::Complex> transform_screened_q_to_r(
+    librpa_int::Dataset &dataset, const librpa_int::PeriodicBoundaryData &pbc,
+    const ScreenedQBlocks &wq);
+
 librpa_int::ComplexMatrix inverse(const librpa_int::ComplexMatrix &matrix);
 librpa_int::ComplexMatrix conjugate(const librpa_int::ComplexMatrix &matrix);
 librpa_int::ComplexMatrix transpose(const librpa_int::ComplexMatrix &matrix);

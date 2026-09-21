@@ -34,6 +34,8 @@ struct InputParameters
     std::string qp_data;
     std::string qp_format = "auto";
     std::string screened_dir;
+    // Legacy LibRPA files contain Wc(R); aims files contain full W(q,iw).
+    std::string screened_format = "librpa_wc";
     int bse_nstates = -1;
     int nocc = 4;
     int nvirt = 4;

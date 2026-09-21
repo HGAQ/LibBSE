@@ -1,5 +1,6 @@
 #include "librpa_api.h"
 #include "io/fhi_aims_adapter.h"
+#include <../src/core/epsilon.h>
 
 #include <stdexcept>
 #include <vector>
@@ -69,6 +70,27 @@ libbse::TensorMap<libbse::Complex> build_bare_coulomb(
             }
         }
     }
+    return result;
+}
+
+libbse::TensorMap<libbse::Complex> transform_screened_q_to_r(
+    librpa_int::Dataset &dataset, const librpa_int::PeriodicBoundaryData &pbc,
+    const ScreenedQBlocks &wq)
+{
+    // Despite its historical Wc name, this routine is a linear spatial FT and
+    // applies unchanged to full W. Frequency/time transforms are not requested.
+    // Explicit q/-q stars supplied by the reader need no space-group rotation.
+    const auto wr = librpa_int::FT_Wc_q2R(
+        dataset.comm_h, dataset.basis_aux, dataset.symmetry_context, wq,
+        dataset.tfg, pbc, pbc.Rlist, true, "", false);
+    libbse::TensorMap<libbse::Complex> result;
+    for (const auto &[iat, js] : wr)
+        for (const auto &[jat, rs] : js)
+            for (const auto &[r, matrix] : rs)
+                result[static_cast<int>(iat)][{static_cast<int>(jat), {r.x,r.y,r.z}}]
+                    = RI::Tensor<libbse::Complex>(
+                        {static_cast<std::size_t>(matrix.nr()), static_cast<std::size_t>(matrix.nc())},
+                        matrix.sptr());
     return result;
 }
 

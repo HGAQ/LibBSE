@@ -1,3 +1,4 @@
+#include "io/aims_screened.h"
 #include "bse_calculation.h"
 
 #include "distributed_amplitudes.h"
@@ -13,9 +14,6 @@
 #include <mpi.h>
 
 #include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -176,288 +174,6 @@ struct ChannelResults
     DistributedAmplitudes amplitudes_y;
 };
 
-void report_matrix_check(const MatrixCheckResult &result,
-                         const std::string &matrix_name,
-                         double threshold, int rank)
-{
-    if (rank != 0) return;
-    std::cout << "|  CHECK " << (result.passed ? "PASS" : "WARNING")
-              << ": Matrix " << matrix_name << " is "
-              << (matrix_name == "A" ? "Hermitian" : "symmetric")
-              << " under threshold " << threshold << '\n';
-}
-
-bool b_symmetry_diagnostics_enabled()
-{
-    const char *value = std::getenv("LIBBSE_DIAG_B_SYMMETRY");
-    return value != nullptr && value[0] != '\0' && value[0] != '0';
-}
-
-struct FourierInteractionBlock
-{
-    std::size_t rows = 0;
-    std::size_t columns = 0;
-    std::vector<Complex> values;
-};
-
-FourierInteractionBlock fourier_interaction_block(
-    const TensorMap<Complex> &tensors, int iat, int jat,
-    const std::array<double, 3> &q)
-{
-    FourierInteractionBlock result;
-    const auto outer = tensors.find(iat);
-    if (outer == tensors.end()) return result;
-    constexpr double two_pi = 6.283185307179586476925286766559;
-    for (const auto &[key, tensor] : outer->second)
-    {
-        if (key.first != jat || tensor.shape.size() != 2) continue;
-        if (result.values.empty())
-        {
-            result.rows = tensor.shape[0];
-            result.columns = tensor.shape[1];
-            result.values.assign(result.rows * result.columns, Complex{});
-        }
-        if (tensor.shape[0] != result.rows
-            || tensor.shape[1] != result.columns)
-            throw std::runtime_error(
-                "inconsistent interaction tensor dimensions in diagnostic");
-        const Cell &cell = key.second;
-        const double angle = two_pi
-                             * (q[0] * cell[0] + q[1] * cell[1]
-                                + q[2] * cell[2]);
-        const Complex phase = std::polar(1.0, angle);
-        for (std::size_t row = 0; row < result.rows; ++row)
-            for (std::size_t column = 0; column < result.columns; ++column)
-                result.values[row * result.columns + column]
-                    += tensor(row, column) * phase;
-    }
-    return result;
-}
-
-void diagnose_interaction_reciprocity(
-    const TensorMap<Complex> &tensors,
-    const librpa_int::Dataset &dataset, const char *name, int rank)
-{
-    if (!b_symmetry_diagnostics_enabled()) return;
-    int mpi_size = 1;
-    MPI_Comm_size(dataset.comm_h.comm, &mpi_size);
-    if (mpi_size != 1)
-    {
-        if (rank == 0)
-            std::cout << "|  interaction reciprocity diagnostic for " << name
-                      << " requires one MPI rank; skipped\n";
-        return;
-    }
-
-    const std::array<std::array<double, 3>, 10> q_points{{
-        {{0.0, 0.0, 0.0}},
-        {{0.5, 0.0, 0.0}},
-        {{0.5, 0.5, 0.0}},
-        {{0.5, 0.5, 0.5}},
-        {{1.0 / 3.0, 0.0, 0.0}},
-        {{2.0 / 3.0, 0.0, 0.0}},
-        {{1.0 / 3.0, 1.0 / 3.0, 0.0}},
-        {{2.0 / 3.0, 2.0 / 3.0, 0.0}},
-        {{1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0}},
-        {{2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0}}
-    }};
-    std::cout << "|  interaction reciprocity diagnostic: " << name << '\n';
-    for (const auto &q : q_points)
-    {
-        const std::array<double, 3> minus_q{{-q[0], -q[1], -q[2]}};
-        double transpose_difference_squared = 0.0;
-        double transpose_sum_squared = 0.0;
-        double hermitian_difference_squared = 0.0;
-        double hermitian_sum_squared = 0.0;
-        for (int iat = 0; iat < static_cast<int>(dataset.atoms.size()); ++iat)
-            for (int jat = 0; jat < static_cast<int>(dataset.atoms.size()); ++jat)
-            {
-                const FourierInteractionBlock forward =
-                    fourier_interaction_block(tensors, iat, jat, q);
-                const FourierInteractionBlock reverse_minus =
-                    fourier_interaction_block(tensors, jat, iat, minus_q);
-                const FourierInteractionBlock reverse_same =
-                    fourier_interaction_block(tensors, jat, iat, q);
-                if (forward.values.empty() || reverse_minus.values.empty()
-                    || reverse_same.values.empty())
-                    continue;
-                if (forward.rows != reverse_minus.columns
-                    || forward.columns != reverse_minus.rows
-                    || forward.rows != reverse_same.columns
-                    || forward.columns != reverse_same.rows)
-                    throw std::runtime_error(
-                        "reciprocal interaction tensor dimensions differ");
-                for (std::size_t row = 0; row < forward.rows; ++row)
-                    for (std::size_t column = 0;
-                         column < forward.columns; ++column)
-                    {
-                        const Complex value =
-                            forward.values[row * forward.columns + column];
-                        const Complex transposed = reverse_minus.values[
-                            column * reverse_minus.columns + row];
-                        const Complex adjoint = std::conj(reverse_same.values[
-                            column * reverse_same.columns + row]);
-                        transpose_difference_squared
-                            += std::norm(value - transposed);
-                        transpose_sum_squared += std::norm(value + transposed);
-                        hermitian_difference_squared
-                            += std::norm(value - adjoint);
-                        hermitian_sum_squared += std::norm(value + adjoint);
-                    }
-            }
-        const auto ratio = [](double difference, double sum)
-        {
-            return sum > 0.0 ? std::sqrt(difference / sum) : 0.0;
-        };
-        std::cout << "|   q=(" << q[0] << ',' << q[1] << ',' << q[2]
-                  << ") transpose-reciprocity="
-                  << ratio(transpose_difference_squared,
-                           transpose_sum_squared)
-                  << " Hermiticity="
-                  << ratio(hermitian_difference_squared,
-                           hermitian_sum_squared) << '\n';
-    }
-}
-
-void diagnose_b_component(const std::vector<Complex> &matrix,
-                          const librpa_int::ArrayDesc &descriptor,
-                          const char *name, int rank)
-{
-    if (!b_symmetry_diagnostics_enabled() || matrix.empty()) return;
-    if (rank == 0)
-        std::cout << "|  B-symmetry diagnostic component: " << name << '\n';
-    const MatrixCheckResult check = check_symmetric(
-        matrix, descriptor, PARAM.constants.matrix_symmetry_threshold);
-    if (rank == 0)
-        std::cout << "|   component status: "
-                  << (check.passed ? "PASS" : "FAIL") << '\n';
-}
-
-void diagnose_a_component(const std::vector<Complex> &matrix,
-                          const librpa_int::ArrayDesc &descriptor,
-                          const char *name, int rank)
-{
-    if (!b_symmetry_diagnostics_enabled() || matrix.empty()) return;
-    if (rank == 0)
-        std::cout << "|  A-Hermiticity diagnostic component: " << name << '\n';
-    const MatrixCheckResult check = check_hermitian(
-        matrix, descriptor, PARAM.constants.matrix_symmetry_threshold);
-    if (rank == 0)
-        std::cout << "|   component status: "
-                  << (check.passed ? "PASS" : "FAIL") << '\n';
-}
-
-void diagnose_b_k_blocks(const std::vector<Complex> &matrix,
-                         const librpa_int::ArrayDesc &descriptor,
-                         int pair_dimension,
-                         const librpa_int::Dataset &dataset, int rank)
-{
-    if (!b_symmetry_diagnostics_enabled() || matrix.empty()) return;
-    const int nk = dataset.mf_band.get_n_kpoints();
-    if (descriptor.m() != nk * pair_dimension) return;
-
-    std::vector<Complex> transposed(matrix.size());
-    LibRPA_API::distributed_transpose(
-        descriptor.m(), descriptor.n(), matrix.data(), descriptor,
-        transposed.data());
-    std::vector<double> difference_squared(static_cast<std::size_t>(nk) * nk,
-                                           0.0);
-    std::vector<double> sum_squared(static_cast<std::size_t>(nk) * nk, 0.0);
-    for (int local_column = 0; local_column < descriptor.n_loc(); ++local_column)
-    {
-        const int global_column = descriptor.indx_l2g_c(local_column);
-        const int column_k = global_column / pair_dimension;
-        for (int local_row = 0; local_row < descriptor.m_loc(); ++local_row)
-        {
-            const int global_row = descriptor.indx_l2g_r(local_row);
-            const int row_k = global_row / pair_dimension;
-            const std::size_t local_index =
-                static_cast<std::size_t>(local_column) * descriptor.lld()
-                + local_row;
-            const std::size_t block_index =
-                static_cast<std::size_t>(row_k) * nk + column_k;
-            difference_squared[block_index]
-                += std::norm(matrix[local_index] - transposed[local_index]);
-            sum_squared[block_index]
-                += std::norm(matrix[local_index] + transposed[local_index]);
-        }
-    }
-    MPI_Allreduce(MPI_IN_PLACE, difference_squared.data(),
-                  static_cast<int>(difference_squared.size()), MPI_DOUBLE,
-                  MPI_SUM, descriptor.comm());
-    MPI_Allreduce(MPI_IN_PLACE, sum_squared.data(),
-                  static_cast<int>(sum_squared.size()), MPI_DOUBLE,
-                  MPI_SUM, descriptor.comm());
-    if (rank != 0) return;
-
-    std::vector<int> order(static_cast<std::size_t>(nk) * nk);
-    std::iota(order.begin(), order.end(), 0);
-    std::sort(order.begin(), order.end(), [&](int left, int right)
-    {
-        return difference_squared[static_cast<std::size_t>(left)]
-               > difference_squared[static_cast<std::size_t>(right)];
-    });
-
-    double diagonal_difference_squared = 0.0;
-    double diagonal_sum_squared = 0.0;
-    double offdiagonal_difference_squared = 0.0;
-    double offdiagonal_sum_squared = 0.0;
-    for (int row_k = 0; row_k < nk; ++row_k)
-        for (int column_k = 0; column_k < nk; ++column_k)
-        {
-            const std::size_t index =
-                static_cast<std::size_t>(row_k) * nk + column_k;
-            if (row_k == column_k)
-            {
-                diagonal_difference_squared += difference_squared[index];
-                diagonal_sum_squared += sum_squared[index];
-            }
-            else
-            {
-                offdiagonal_difference_squared += difference_squared[index];
-                offdiagonal_sum_squared += sum_squared[index];
-            }
-        }
-    const auto ratio = [](double difference, double sum)
-    {
-        return sum > 0.0 ? std::sqrt(difference / sum) : 0.0;
-    };
-    std::cout << "|  screened-B k-block symmetry diagnostic:\n"
-              << "|   same-k relative error: "
-              << ratio(diagonal_difference_squared, diagonal_sum_squared)
-              << '\n'
-              << "|   different-k relative error: "
-              << ratio(offdiagonal_difference_squared,
-                       offdiagonal_sum_squared)
-              << '\n'
-              << "|   largest ||B(k1,k2)-B(k2,k1)^T||_F blocks:\n";
-    const int count = std::min(12, static_cast<int>(order.size()));
-    for (int position = 0; position < count; ++position)
-    {
-        const int block = order[static_cast<std::size_t>(position)];
-        const int row_k = block / nk;
-        const int column_k = block % nk;
-        const auto &k1 = dataset.kfrac_band_list.at(
-            static_cast<std::size_t>(row_k));
-        const auto &k2 = dataset.kfrac_band_list.at(
-            static_cast<std::size_t>(column_k));
-        const auto wrap = [](double value)
-        {
-            value -= std::floor(value);
-            return value;
-        };
-        const std::size_t block_index = static_cast<std::size_t>(block);
-        std::cout << "|    k1=" << row_k + 1 << " k2=" << column_k + 1
-                  << " q=(" << wrap(k2.x - k1.x) << ','
-                  << wrap(k2.y - k1.y) << ','
-                  << wrap(k2.z - k1.z) << ") diff="
-                  << std::sqrt(difference_squared[block_index])
-                  << " rel="
-                  << ratio(difference_squared[block_index],
-                           sum_squared[block_index]) << '\n';
-    }
-}
-
 } // namespace
 
 void run_bse(const InputParameters &options,
@@ -580,7 +296,7 @@ void run_bse(const InputParameters &options,
         return;
     }
 
-    
+    // ipa calculation
     if (options.ipa_only())
     {
         if (rank == 0)
@@ -636,6 +352,8 @@ void run_bse(const InputParameters &options,
         return;
     }
 
+    //full and tda calculation
+    // 1. Transform the cut Coulomb interaction from q to R space using LibRPA.
     if (rank == 0)
         std::cout << "Transforming cut Coulomb from q to R with LibRPA FT_Vq...\n";
     auto bare = [&]()
@@ -647,21 +365,25 @@ void run_bse(const InputParameters &options,
     done("transform cut Coulomb from q to R", dataset->comm_h.comm);
 
     MolecularLri molecular(*dataset, options, qp);
-
+    // 2. Both sources produce W(R) on the coarse GW cell. The aims source
+    // already contains V; only the legacy LibRPA Wc source needs W = V + Wc.
     if (rank == 0)
-        std::cout << "Reading Wc and constructing W = V + Wc...\n";
+        std::cout << "Reading screened interaction (" << options.screened_format << ")...\n";
     auto screened = [&]()
     {
         ScopedTimer timer(global::profiler, "read_screened_interaction",
                           "Read and construct screened interaction");
+        if (options.screened_format == "fhi_aims_w")
+            return read_aims_screened_interaction(options, *dataset,
+                molecular.local_i_atoms(), molecular.local_j_atoms());
         return read_screened_interaction(options, bare,
                                          dataset->pbc.Rlist.size(),
                                          molecular.local_i_atoms(),
                                          molecular.local_j_atoms());
     }();
-    done("read Wc and construct screened interaction",
+    done("read and construct screened interaction",
          dataset->comm_h.comm);
-
+    //3. Convert the LibRPA Cs tensors to LibRI coefficients for the BSE contractions.
     if (rank == 0)
         std::cout << "Converting LibRPA Cs tensors for complex LibRI contractions...\n";
     auto coefficients = [&]()
@@ -671,12 +393,7 @@ void run_bse(const InputParameters &options,
         return convert_lri_coefficients(*dataset);
     }();
     done("convert RI coefficients for LibRI", dataset->comm_h.comm);
-
-    diagnose_interaction_reciprocity(
-        bare, *dataset, "bare interaction before nearest-cell remap", rank);
-    diagnose_interaction_reciprocity(
-        screened, *dataset,
-        "screened interaction before nearest-cell remap", rank);
+    //4. Remap the interactions to the nearest BvK cells.
 
     {
         ScopedTimer timer(global::profiler, "remap_bvk_cells",
@@ -686,12 +403,7 @@ void run_bse(const InputParameters &options,
         remap_to_nearest_bvk_cell(screened, *dataset);
     }
     done("remap interactions to nearest BvK cells", dataset->comm_h.comm);
-    diagnose_interaction_reciprocity(
-        bare, *dataset, "bare interaction after nearest-cell remap", rank);
-    diagnose_interaction_reciprocity(
-        screened, *dataset,
-        "screened interaction after nearest-cell remap", rank);
-
+    //5. Initialize the LibRI BSE contractions and construct the Hartree and screened contributions.
     if (rank == 0)
         std::cout << "Initializing external LibRI RI::LR...\n";
     {
@@ -720,7 +432,6 @@ void run_bse(const InputParameters &options,
             molecular.add_hartree_a(hartree_a, descriptor, 1.0);
         }
         done("construct Hartree contribution for A", dataset->comm_h.comm);
-        diagnose_a_component(hartree_a, descriptor, "Hartree A", rank);
     }
     if (options.requires_screened())
     {
@@ -730,8 +441,8 @@ void run_bse(const InputParameters &options,
             molecular.add_screened_a(screened_a, descriptor, 1.0);
         }
         done("construct screened contribution for A", dataset->comm_h.comm);
-        diagnose_a_component(screened_a, descriptor, "screened A", rank);
     }
+    // Construct the B contributions only if the full BSE is requested, since they are not needed for TDA.
     if (options.solve_full() && options.requires_hartree())
     {
         hartree_b.assign(local_size, Complex{});
@@ -740,7 +451,6 @@ void run_bse(const InputParameters &options,
             molecular.add_hartree_b(hartree_b, descriptor, 1.0);
         }
         done("construct Hartree contribution for B", dataset->comm_h.comm);
-        diagnose_b_component(hartree_b, descriptor, "Hartree B", rank);
     }
     if (options.solve_full() && options.requires_screened())
     {
@@ -750,12 +460,9 @@ void run_bse(const InputParameters &options,
             molecular.add_screened_b(screened_b, descriptor, 1.0);
         }
         done("construct screened contribution for B", dataset->comm_h.comm);
-        diagnose_b_component(screened_b, descriptor, "screened B", rank);
-        diagnose_b_k_blocks(screened_b, descriptor,
-                            options.nocc * options.nvirt, *dataset, rank);
     }
     molecular.release_interactions();
-
+    //6. Assemble the channel matrices, check their symmetry, and diagonalize them with ELPA.
     std::vector<ChannelResults> tda_results;
     std::vector<ChannelResults> full_results;
     if (options.solve_tda())
@@ -772,17 +479,13 @@ void run_bse(const InputParameters &options,
                     matrix, descriptor, qp, options, channel_coefficients,
                     hartree_a, screened_a);
             }
-            MatrixCheckResult matrix_check;
             {
                 ScopedTimer timer(global::profiler, "check_tda_a_matrix",
                                   "Check TDA A-matrix Hermiticity");
-                matrix_check = check_hermitian(
+                check_hermitian(
                     matrix, descriptor,
                     PARAM.constants.matrix_symmetry_threshold);
             }
-            report_matrix_check(
-                matrix_check, "A", PARAM.constants.matrix_symmetry_threshold,
-                rank);
             done("initialize and check " + spin_type + " TDA A matrix",
                  dataset->comm_h.comm);
             if (rank == 0)
@@ -857,17 +560,13 @@ void run_bse(const InputParameters &options,
                     matrix_a, descriptor, qp, options, channel_coefficients,
                     hartree_a, screened_a);
             }
-            MatrixCheckResult a_check;
             {
                 ScopedTimer timer(global::profiler, "check_full_a_matrix",
                                   "Check full-BSE A-matrix Hermiticity");
-                a_check = check_hermitian(
+                check_hermitian(
                     matrix_a, descriptor,
                     PARAM.constants.matrix_symmetry_threshold);
             }
-            report_matrix_check(
-                a_check, "A", PARAM.constants.matrix_symmetry_threshold,
-                rank);
             done("initialize and check " + spin_type + " full-BSE A matrix",
                  dataset->comm_h.comm);
 
@@ -884,17 +583,13 @@ void run_bse(const InputParameters &options,
                                            * screened_b[index];
                 }
             }
-            MatrixCheckResult b_check;
             {
                 ScopedTimer timer(global::profiler, "check_full_b_matrix",
                                   "Check full-BSE B-matrix symmetry");
-                b_check = check_symmetric(
+                check_symmetric(
                     matrix_b, descriptor,
                     PARAM.constants.matrix_symmetry_threshold);
             }
-            report_matrix_check(
-                b_check, "B", PARAM.constants.matrix_symmetry_threshold,
-                rank);
             done("initialize and check " + spin_type + " full-BSE B matrix",
                  dataset->comm_h.comm);
             if (rank == 0)

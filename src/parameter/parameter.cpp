@@ -199,6 +199,8 @@ void Parameter::parse(const std::string &contents, const fs::path &base_director
     if (auto value = take("qp_data"); !value.empty()) inp.qp_data = value;
     if (auto value = take("qp_format"); !value.empty())
         inp.qp_format = lower(value);
+    if (auto value = take("screened_format"); !value.empty())
+        inp.screened_format = lower(value);
     if (auto value = take("screened_dir"); !value.empty())
         inp.screened_dir = value;
     if (auto value = take("bse_nstates"); !value.empty())
@@ -249,6 +251,9 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
     inp.qp_data = trim(inp.qp_data);
     inp.qp_format = lower(trim(inp.qp_format));
     inp.screened_dir = trim(inp.screened_dir);
+    inp.screened_format = lower(trim(inp.screened_format));
+    if (inp.screened_format != "librpa_wc" && inp.screened_format != "fhi_aims_w")
+        throw std::invalid_argument("screened_format must be librpa_wc or fhi_aims_w");
     inp.bse_solver = lower(trim(inp.bse_solver));
     for (std::string &spin_type : inp.bse_spin_types)
         spin_type = lower(trim(spin_type));
@@ -343,6 +348,7 @@ void Parameter::print(std::ostream &output) const
            << "  input_format: " << inp.input_format << '\n'
            << "  qp_data: " << inp.qp_data << '\n'
            << "  qp_format: " << inp.qp_format << '\n'
+           << "  screened_format: " << inp.screened_format << '\n'
            << "  screened_dir: " << inp.screened_dir << '\n'
            << "  bse_nstates: " << inp.bse_nstates << '\n'
            << "  nocc: " << inp.nocc << '\n'
