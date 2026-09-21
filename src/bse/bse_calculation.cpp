@@ -1,4 +1,5 @@
 #include "io/aims_screened.h"
+#include "io/chi0_screening.h"
 #include "bse_calculation.h"
 
 #include "distributed_amplitudes.h"
@@ -365,17 +366,20 @@ void run_bse(const InputParameters &options,
     done("transform cut Coulomb from q to R", dataset->comm_h.comm);
 
     MolecularLri molecular(*dataset, options, qp);
-    // 2. Both sources produce W(R) on the coarse GW cell. The aims source
-    // already contains V; only the legacy LibRPA Wc source needs W = V + Wc.
+    Chi0Screening dielectric(options, *dataset);
+    // 2. Every reader returns full W(R) on the coarse GW cell. Chi0 readers
+    // first screen complete q-space matrices; only the legacy Wc reader adds V.
     if (rank == 0)
         std::cout << "Reading screened interaction (" << options.screened_format << ")...\n";
     auto screened = [&]()
     {
         ScopedTimer timer(global::profiler, "read_screened_interaction",
                           "Read and construct screened interaction");
-        if (options.screened_format == "fhi_aims_w")
+        if (options.screened_format == "fhi_aims_w" || options.screened_format == "fhi_aims_chi0")
             return read_aims_screened_interaction(options, *dataset,
-                molecular.local_i_atoms(), molecular.local_j_atoms());
+                molecular.local_i_atoms(), molecular.local_j_atoms(), &dielectric);
+        if (options.screened_format == "librpa_chi0")
+            return read_librpa_chi0(options, *dataset, molecular.local_i_atoms(), molecular.local_j_atoms(), &dielectric);
         return read_screened_interaction(options, bare,
                                          dataset->pbc.Rlist.size(),
                                          molecular.local_i_atoms(),
@@ -500,6 +504,48 @@ void run_bse(const InputParameters &options,
             }
             done("diagonalize " + spin_type + " TDA matrix with ELPA",
                  dataset->comm_h.comm);
+
+            if (options.bse_plasma_energy_ev > 0 && channel_coefficients.screened != 0.)
+            {
+                // Match the reference aims one-shot prescription: Eb=Eg-E_static.
+                // Eg is the smallest DIRECT transition on the actual BSE QP grid,
+                // not Si's indirect gap. The kernel targets the lowest static
+                // exciton in this spin channel; higher levels share that kernel.
+                const auto static_energies = solution.energies_ry;
+                const double binding_ev = (qp.direct_gap_ry - static_energies.front())
+                                          * PARAM.constants.ry_to_ev;
+                if (binding_ev < 0.)
+                    throw std::runtime_error("lowest static exciton is unbound: effective BSE requires Eb >= 0");
+                auto effective_w = dielectric.effective(binding_ev,
+                    molecular.local_i_atoms(), molecular.local_j_atoms());
+                remap_to_nearest_bvk_cell(effective_w, *dataset);
+                molecular.replace_screened(effective_w);
+                std::vector<Complex> effective_a(local_size, Complex{});
+                molecular.add_screened_a(effective_a, descriptor, 1.0);
+                molecular.release_interactions();
+                assemble_channel_matrix(matrix, descriptor, qp, options,
+                    channel_coefficients, hartree_a, effective_a);
+                check_hermitian(matrix, descriptor, PARAM.constants.matrix_symmetry_threshold);
+                solution = solve_tda_elpa(matrix, descriptor, options.bse_nstates);
+                if(rank == 0)
+                {
+                    const auto static_file = fs::path(options.output_dir) / ("static_excitation_" + spin_type + ".dat");
+                    write_energies(static_file, static_energies);
+                    std::ofstream comparison(fs::path(options.output_dir) / ("dynamical_" + spin_type + ".dat"));
+                    comparison << std::setprecision(16)
+                        << "# One-shot spectral effective BSE; all energies in eV\n"
+                        << "# plasma " << options.bse_plasma_energy_ev << "\n"
+                        << "# direct_QP_gap " << qp.direct_gap_ry * PARAM.constants.ry_to_ev << "\n"
+                        << "# binding_used " << binding_ev << "\n"
+                        << "# state static effective shift\n";
+                    for(std::size_t i=0;i<static_energies.size();++i)
+                        comparison << i+1 << ' ' << static_energies[i]*PARAM.constants.ry_to_ev << ' '
+                            << solution.energies_ry[i]*PARAM.constants.ry_to_ev << ' '
+                            << (solution.energies_ry[i]-static_energies[i])*PARAM.constants.ry_to_ev << '\n';
+                    std::cout << "Effective BSE: plasma = " << options.bse_plasma_energy_ev
+                              << " eV, binding from static lowest " << spin_type << " = " << binding_ev << " eV\n";
+                }
+            }
 
             ChannelResults channel;
             channel.spin_type = spin_type;

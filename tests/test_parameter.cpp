@@ -121,6 +121,10 @@ void test_invalid_or_unsupported_parameters_are_rejected()
         return false;
     };
 
+    require(rejected("screened_format librpa_chi0\nbse_plasma_energy_ev 15\nbse_tda tda\nbse_spin_types ipa\n"), "IPA silently accepted an effective screening model");
+    require(rejected("bse_plasma_energy_ev nan\n"), "nonfinite plasma energy was accepted");
+    require(rejected("bse_plasma_energy_ev 15\nbse_tda tda\n"), "dynamic model accepted a W-only input");
+    require(rejected("screened_format librpa_chi0\nchi0_coulomb_metric single_cut\nchi0_headwing true\n"), "head/wing accepted a cut-only dielectric metric");
     require(rejected("abs_gauge length\n"), "length gauge was not rejected");
     require(rejected("bse_spin_types unsupported\n"),
             "unsupported spin type was not rejected");

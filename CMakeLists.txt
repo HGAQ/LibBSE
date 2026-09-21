@@ -59,6 +59,7 @@ add_library(libbse_core
   src/bse/spectrum.cpp
   src/interface/librpa_api.cpp
   src/io/aims_screened.cpp
+  src/io/chi0_screening.cpp
   src/io/bse_files.cpp
   src/io/fhi_aims_adapter.cpp
   src/parameter/parameter.cpp
@@ -78,8 +79,6 @@ target_link_libraries(libbse_core PUBLIC rpa_lib)
 add_executable(LibBSE driver/main.cpp)
 target_link_libraries(LibBSE PRIVATE libbse_core)
 
-add_executable(aims_w_to_librpa tools/aims_w_to_librpa.cpp)
-target_link_libraries(aims_w_to_librpa PRIVATE libbse_core)
 
 option(LIBBSE_BUILD_TESTING "Build LibBSE tests" ON)
 if(LIBBSE_BUILD_TESTING)
@@ -121,6 +120,14 @@ if(LIBBSE_BUILD_TESTING)
   set_tests_properties(LibBSE_spectrum_mpi PROPERTIES
     ENVIRONMENT "OMP_NUM_THREADS=2")
 
+  add_executable(test_chi0_screening tests/test_chi0_screening.cpp)
+  target_link_libraries(test_chi0_screening PRIVATE libbse_core)
+  add_test(NAME LibBSE_chi0_screening_serial COMMAND test_chi0_screening)
+  add_test(NAME LibBSE_chi0_screening_mpi
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 $<TARGET_FILE:test_chi0_screening>)
+  set_tests_properties(LibBSE_chi0_screening_serial LibBSE_chi0_screening_mpi
+    PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
+
   add_executable(test_aims_screened tests/test_aims_screened.cpp)
   target_link_libraries(test_aims_screened PRIVATE libbse_core)
   add_test(NAME LibBSE_aims_screened_serial COMMAND test_aims_screened)
@@ -132,6 +139,9 @@ if(LIBBSE_BUILD_TESTING)
   add_executable(test_bse_files tests/test_bse_files.cpp)
   target_link_libraries(test_bse_files PRIVATE libbse_core)
   add_test(NAME LibBSE_bse_files COMMAND test_bse_files)
+
+  add_test(NAME LibBSE_aims_w_converter
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_aims_w_to_librpa.py)
 
   add_test(NAME LibBSE_aims_mommat_converter
     COMMAND ${Python3_EXECUTABLE}

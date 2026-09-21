@@ -196,6 +196,15 @@ void MolecularLri::initialize(TensorMap<Complex> &Cs_in,
     const std::set<int> set_j(lr_.list_J.begin(), lr_.list_J.end());
     const std::set<int> set_ij(lr_.list_IJ.begin(), lr_.list_IJ.end());
 
+    if (options_.screened_format.find("chi0") != std::string::npos && options_.chi0_headwing)
+    {
+        // Analytic wings need uniquely owned C(R) blocks. The LR interface
+        // disables its own tensor communication, so gather the atom rows needed
+        // by this rank before its AO->MO Fourier transform. Do this once, AFTER
+        // head/wing construction; replicating earlier would overcount the wing.
+        Cs_in = RI::Communicate_Tensors_Map_Judge::comm_map2_first(
+            dataset_.comm_h.comm, Cs_in, set_ij, all_atoms);
+    }
     lr_.set_Cs(Cs_in, PARAM.constants.cs_threshold, set_ij, all_atoms);
     Cs_in.clear();
     lr_.set_Vs(Vs_in, PARAM.constants.coulomb_threshold, set_i, set_j);
@@ -525,6 +534,15 @@ void MolecularLri::add_screened_b(std::vector<Complex> &matrix,
         {"V", "O", "O", "V"}, "Ws_", false);
     transform_k_2dlocal(
         matrix, blocks, descriptor, nk_, pair_dimension_, coefficient);
+}
+
+void MolecularLri::replace_screened(TensorMap<Complex> &screened)
+{
+    lr_.free_Ws();
+    const std::set<int> rows(lr_.list_I.begin(), lr_.list_I.end());
+    const std::set<int> cols(lr_.list_J.begin(), lr_.list_J.end());
+    lr_.set_Ws(screened, PARAM.constants.coulomb_threshold, rows, cols);
+    screened.clear();
 }
 
 void MolecularLri::release_interactions()

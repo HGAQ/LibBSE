@@ -52,6 +52,9 @@ public:
                         const librpa_int::ArrayDesc &descriptor,
                         double coefficient);
 
+    // Replace only W after the static solve; retain the already transformed
+    // RI coefficients and fine-grid wave functions for the effective kernel.
+    void replace_screened(TensorMap<Complex> &screened);
     void release_interactions();
 
 private:

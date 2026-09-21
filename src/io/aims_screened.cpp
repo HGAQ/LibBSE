@@ -1,5 +1,6 @@
 #include "aims_screened.h"
 #include "interface/librpa_api.h"
+#include "chi0_screening.h"
 
 #include <algorithm>
 #include <cmath>
@@ -20,7 +21,7 @@ struct Header {
     int naux = 0, nfreq = 0, iq = 0;
     KPoint q{};
 };
-Header read_header(const fs::path &file) {
+Header read_header(const fs::path &file, const std::string &expected) {
     std::ifstream in(file);
     if (!in) throw std::runtime_error("cannot open aims W file: " + file.string());
     Header h;
@@ -30,7 +31,7 @@ Header read_header(const fs::path &file) {
         if (line.rfind("# quantity:", 0) == 0) {
             std::istringstream s(line.substr(11));
             std::string value; s >> value;
-            quantity = value == "w";
+            quantity = value == expected;
         } else if (line.rfind("# n_basbas n_freq q_index:", 0) == 0) {
             std::istringstream s(line.substr(line.find(':') + 1));
             dimensions = bool(s >> h.naux >> h.nfreq >> h.iq);
@@ -42,7 +43,7 @@ Header read_header(const fs::path &file) {
         }
     }
     if (!quantity || !dimensions || !coordinates || !units || h.naux <= 0 || h.nfreq <= 0)
-        throw std::runtime_error("invalid full-W header (expected aims RI basis and atomic units): " + file.string());
+        throw std::runtime_error("invalid response header (expected aims RI basis and atomic units): " + file.string());
     return h;
 }
 double distance(double a, double b) {
@@ -80,18 +81,20 @@ std::pair<int, double> lowest_frequency(const fs::path &file, int nfreq) {
 
 TensorMap<Complex> read_aims_screened_interaction(
     const InputParameters &options, librpa_int::Dataset &dataset,
-    const std::vector<int> &local_i_atoms, const std::vector<int> &local_j_atoms) {
+    const std::vector<int> &local_i_atoms, const std::vector<int> &local_j_atoms, Chi0Screening *screening) {
+    Chi0Screening owned(options,dataset); if(!screening) screening=&owned;
     if (options.input_format != "fhi_aims")
         throw std::runtime_error("screened_format fhi_aims_w requires matching FHI-aims RI/KS input");
+    const std::string quantity = options.screened_format == "fhi_aims_chi0" ? "chi0" : "w";
     const auto grid = librpa_int::build_uniform_kmesh_frac(dataset.pbc.period);
     std::map<int, std::vector<fs::path>> files;
     std::map<int, Header> headers;
-    const std::regex pattern("periodic_gw_w_q_([0-9]+)_rank_([0-9]+)\\.dat");
+    const std::regex pattern("periodic_gw_" + quantity + "_q_([0-9]+)_rank_([0-9]+)\\.dat");
     for (const auto &entry : fs::directory_iterator(options.screened_dir)) {
         std::smatch match;
         const auto name = entry.path().filename().string();
         if (!entry.is_regular_file() || !std::regex_match(name, match, pattern)) continue;
-        const auto h = read_header(entry.path());
+        const auto h = read_header(entry.path(), quantity);
         if (h.naux != static_cast<int>(dataset.basis_aux.nb_total) || h.iq != std::stoi(match[1]))
             throw std::runtime_error("aims W auxiliary dimension/q index mismatch: " + entry.path().string());
         const int iq = grid_index(h.q, grid);
@@ -100,7 +103,7 @@ TensorMap<Complex> read_aims_screened_interaction(
             throw std::runtime_error("inconsistent aims W rank-file headers");
         files[iq].push_back(entry.path());
     }
-    if (files.empty()) throw std::runtime_error("no periodic_gw_w_q_*_rank_*.dat in " + options.screened_dir);
+    if (files.empty()) throw std::runtime_error("no matching periodic_gw matrix rank files in " + options.screened_dir);
 
     // Construct explicit q stars from exported coordinates. Only time reversal
     // W(-q,iw)=conj(W(q,iw)) can be inferred without auxiliary-basis rotations.
@@ -108,7 +111,6 @@ TensorMap<Complex> read_aims_screened_interaction(
     // (symmetry none) or inversion-only aims output if another q is missing.
     auto pbc = dataset.pbc;
     pbc.map_irk_ks.clear();
-    std::map<int, int> representatives;
     int restored = 0;
     for (int iq = 0; iq < static_cast<int>(grid.size()); ++iq) {
         int ir = iq;
@@ -118,7 +120,6 @@ TensorMap<Complex> read_aims_screened_interaction(
                 throw std::runtime_error("incomplete aims W q mesh: use periodic_gw_optimize_kgrid_symmetry none or inverse");
             ++restored;
         }
-        representatives[iq] = ir;
         const auto q = grid[ir] * pbc.G;
         const auto q_full = grid[iq] * pbc.G;
         pbc.map_irk_ks[q].push_back(q_full);
@@ -164,6 +165,12 @@ TensorMap<Complex> read_aims_screened_interaction(
             }
         }
         if (count != naux * naux) throw std::runtime_error("missing aims W rank block/entries at q " + std::to_string(headers.at(iq).iq));
+        if (quantity == "chi0") {
+            librpa_int::Matz chi(naux, naux, librpa_int::MAJOR::ROW);
+            std::copy(matrix.begin(), matrix.end(), chi.ptr());
+            const auto screened = screening->screen(chi, grid[iq] * pbc.G, selected_omega);
+            std::copy_n(screened.ptr(), matrix.size(), matrix.begin());
+        }
         // Keep only the atom pairs needed on this MPI rank. Global aims indices
         // are one-based; the shared basis_out fixes their atom/local ordering.
         const auto q = grid[iq] * pbc.G;
@@ -177,7 +184,7 @@ TensorMap<Complex> read_aims_screened_interaction(
         }
     }
     if (dataset.comm_h.myid == 0)
-        std::cout << "FHI-aims full W: omega = " << selected_omega << " Ha (lowest |omega|; static approximation), "
+        std::cout << "FHI-aims " << quantity << " -> full W: omega = " << selected_omega << " Ha (lowest |omega|; static approximation), "
                   << files.size() << " stored q, " << restored << " time-reversal partners; coarse mesh "
                   << pbc.period.x << 'x' << pbc.period.y << 'x' << pbc.period.z
                   << ", BSE k points " << dataset.mf_band.get_n_kpoints() << '\n';
@@ -188,6 +195,7 @@ TensorMap<Complex> read_aims_screened_interaction(
     // interpolation on the coarse BvK cell, not frequency interpolation or a
     // new dielectric calculation on the fine BSE mesh. Hartree->Ry conversion
     // remains in the existing BSE contraction and must not be applied here.
+    screening->pbc=pbc;
     return LibRPA_API::transform_screened_q_to_r(dataset, pbc, wq);
 }
 } // namespace libbse

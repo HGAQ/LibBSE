@@ -37,6 +37,12 @@ std::shared_ptr<librpa_int::Dataset> read_dataset(
     reader_options.cs_threshold = libbse::PARAM.constants.cs_threshold;
     reader_options.coulomb_threshold = libbse::PARAM.constants.coulomb_threshold;
     reader_options.read_ri = options.read_ri;
+    reader_options.distribute_lri = options.read_ri
+        && libbse::PARAM.inp.screened_format.find("chi0") != std::string::npos
+        && libbse::PARAM.inp.chi0_headwing;
+    reader_options.read_full_coulomb = options.read_ri
+        && libbse::PARAM.inp.screened_format.find("chi0") != std::string::npos
+        && libbse::PARAM.inp.chi0_coulomb_metric == "full";
     reader_options.read_band_data = options.read_band_data;
     // velocity_matrix is deliberately unconditional in the public LibRPA
     // reader.  Every LibBSE mode, including IPA and spectrum restart, produces
@@ -50,7 +56,9 @@ libbse::TensorMap<libbse::Complex> build_bare_coulomb(
     auto real_space = librpa_int::FT_Vq(dataset.comm_h, dataset.basis_aux,
                                         dataset.symmetry_context, dataset.vq_cut,
                                         dataset.pbc, true, false);
-    dataset.vq_cut.clear();
+    // Chi0 screening still needs V(q) after constructing the Hartree kernel.
+    if (libbse::PARAM.inp.screened_format.find("chi0") == std::string::npos)
+        dataset.vq_cut.clear();
 
     libbse::TensorMap<libbse::Complex> result;
     for (const auto &[iat, atom_blocks] : real_space)

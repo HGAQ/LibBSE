@@ -34,8 +34,16 @@ struct InputParameters
     std::string qp_data;
     std::string qp_format = "auto";
     std::string screened_dir;
-    // Legacy LibRPA files contain Wc(R); aims files contain full W(q,iw).
+    // librpa_wc: Wc(R); fhi_aims_w: full W(q,iw).
+    // chi0 paths use full V inside epsilon and cut V outside, as in LibRPA GW.
     std::string screened_format = "librpa_wc";
+    std::string chi0_coulomb_metric = "full";
+    bool chi0_headwing = true;
+    bool out_screening_matrices = false;
+    // Positive plasma energy enables a one-shot effective kernel. Eb is computed
+    // from the lowest STATIC excitation and the minimum direct QP transition.
+    // Other states are eigenstates of this same target-exciton kernel.
+    double bse_plasma_energy_ev = 0.0;
     int bse_nstates = -1;
     int nocc = 4;
     int nvirt = 4;
