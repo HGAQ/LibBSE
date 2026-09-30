@@ -546,7 +546,7 @@ void run_bse(const InputParameters &options,
                               << " eV, binding from static lowest " << spin_type << " = " << binding_ev << " eV\n";
                 }
             }
-
+            //7. Redistribute the eigenvectors to the BSE grid and write the results to disk.
             ChannelResults channel;
             channel.spin_type = spin_type;
             channel.energies = solution.energies_ry;
@@ -584,7 +584,7 @@ void run_bse(const InputParameters &options,
             tda_results.push_back(std::move(channel));
         }
     }
-
+    // full BSE calculation
     if (options.solve_full())
     {
         librpa_int::ArrayDesc full_descriptor(dataset->blacs_h);
@@ -645,6 +645,7 @@ void run_bse(const InputParameters &options,
             {
                 ScopedTimer timer(global::profiler, "solve_full_elpa",
                                   "Solve full BSE with ELPA");
+                // The full BSE Hamiltonian is NOT Hermitian AND not positive definite, so we use the generalized eigenvalue solver.
                 solution = solve_full_elpa(
                     matrix_a, matrix_b, descriptor, full_descriptor,
                     options.bse_nstates);
