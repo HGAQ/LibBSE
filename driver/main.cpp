@@ -18,23 +18,13 @@ namespace
 
     void print_banner()
     {
-        constexpr const char *green = "\033[38;5;29m";
-        constexpr const char *blue = "\033[38;5;25m";
-        constexpr const char *purple = "\033[38;5;54m";
-        constexpr const char *reset = "\033[0m";
-        std::cout << '\n'
-                  << green << "██╗     ██╗" << blue << "██" << reset
-                  << purple << "████╗ ███████╗███████╗" << reset << '\n'
-                  << green << "██║     ╚═╝" << blue << "██╔" << reset
-                  << purple << "══██╗██╔════╝██╔════╝" << reset << '\n'
-                  << green << "██║     ██║" << blue << "██████╔╝" << reset
-                  << purple << "███████╗█████╗  " << reset << '\n'
-                  << green << "██║     ██║" << blue << "██╔══██╗" << reset
-                  << purple << "╚════██║██╔══╝  " << reset << '\n'
-                  << green << "███████╗██║" << blue << "██████╔╝" << reset
-                  << purple << "███████║███████╗" << reset << '\n'
-                  << green << "╚══════╝╚═╝" << blue << "╚═════╝ " << reset
-                  << purple << "╚══════╝╚══════╝" << reset << "\n\n"
+        std::cout << """
+                ██╗     ██╗██╗     ██████╗ ███████╗███████╗
+                ██║     ╚═╝██║     ██╔══██╗██╔════╝██╔════╝
+                ██║     ██║██████╗ ██████╔╝███████╗█████╗
+                ██║     ██║██╔══██╗██╔══██╗╚════██║██╔══╝
+                ███████╗██║██████╔╝██████╔╝███████║███████╗
+                ╚══════╝╚═╝╚═════╝ ╚═════╝ ╚══════╝╚══════╝"""
                   << std::flush;
     }
 
