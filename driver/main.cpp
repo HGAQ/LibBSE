@@ -18,13 +18,13 @@ namespace
 
     void print_banner()
     {
-        std::cout << """
+        std::cout << R"(
                 ██╗     ██╗██╗     ██████╗ ███████╗███████╗
                 ██║     ╚═╝██║     ██╔══██╗██╔════╝██╔════╝
                 ██║     ██║██████╗ ██████╔╝███████╗█████╗
                 ██║     ██║██╔══██╗██╔══██╗╚════██║██╔══╝
                 ███████╗██║██████╔╝██████╔╝███████║███████╗
-                ╚══════╝╚═╝╚═════╝ ╚═════╝ ╚══════╝╚══════╝"""
+                ╚══════╝╚═╝╚═════╝ ╚═════╝ ╚══════╝╚══════╝)"
                   << std::flush;
     }
 
@@ -42,6 +42,12 @@ namespace
     
     void print_parallel_configuration(int mpi_size, int mpi_thread_level)
     {
+        int team_size = 1;
+#pragma omp parallel
+        {
+#pragma omp single
+            team_size = omp_get_num_threads();
+        }
         std::cout << "LibBSE parallel configuration\n"
                   << "  MPI processes: " << mpi_size << '\n'
                   << "  MPI thread level requested: MPI_THREAD_FUNNELED\n"
@@ -49,6 +55,7 @@ namespace
                   << mpi_thread_level_name(mpi_thread_level) << '\n'
                   << "  OpenMP max threads per MPI process: "
                   << omp_get_max_threads() << '\n'
+                  << "  OpenMP observed team size: " << team_size << '\n'
                   << "  OpenMP available processors: " << omp_get_num_procs() << '\n'
                   << "  OpenMP dynamic adjustment: "
                   << (omp_get_dynamic() ? "enabled" : "disabled") << '\n';

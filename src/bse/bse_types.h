@@ -41,6 +41,12 @@ struct EigenSolution
 
 // Excitation amplitudes distributed by contiguous electron-hole-pair blocks.
 // Every MPI rank stores all requested states for only its local pair interval.
+// Cast before multiplication: all-state arrays can exceed 2^31 elements/rank.
+inline std::size_t amplitude_offset(int state, int pair_count, int pair)
+{
+    return static_cast<std::size_t>(state) * pair_count + pair;
+}
+
 struct DistributedAmplitudes
 {
     int dimension = 0;
@@ -51,14 +57,12 @@ struct DistributedAmplitudes
 
     Complex &operator()(int state, int local_pair)
     {
-        return values[static_cast<std::size_t>(state) * local_pairs
-                      + local_pair];
+        return values[amplitude_offset(state, local_pairs, local_pair)];
     }
 
     const Complex &operator()(int state, int local_pair) const
     {
-        return values[static_cast<std::size_t>(state) * local_pairs
-                      + local_pair];
+        return values[amplitude_offset(state, local_pairs, local_pair)];
     }
 };
 

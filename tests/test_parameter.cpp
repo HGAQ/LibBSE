@@ -33,6 +33,7 @@ bse_ri_hartree 1
 bse_use_fine_kgrid 1
 bse_q_approx_mode 0
 out_bse_ab 0
+out_bse_eigenvectors false
 abs_gauge velocity
 wavefunction_gauge native
 spectrum_broadening_ev 0.15
@@ -42,6 +43,7 @@ spectrum_energy_max_ev 8.0
 )", "/tmp/libbse-parameter-base");
 
     require(parameter.inp.bse_nstates == 8, "bse_nstates was not parsed");
+    require(!parameter.inp.out_bse_eigenvectors, "eigenvector output was not disabled");
     require(parameter.inp.spectrum_only(), "bse_solver was not parsed");
     require(parameter.inp.nocc == 2 && parameter.inp.nvirt == 3,
             "BSE band counts were not parsed");
@@ -85,6 +87,7 @@ out_bse_ab = false
             "key=value parsing or last-value semantics failed");
     require(parameter.inp.output_dir == "/tmp/libbse.d",
             "default output_dir was not resolved against libbse.in");
+    require(parameter.inp.out_bse_eigenvectors, "legacy eigenvector-output default changed");
     require(parameter.inp.qp_data == "/tmp/second"
                 && parameter.inp.screened_dir == "/tmp/librpa.d",
             "default QP or screened-interaction path is incorrect");

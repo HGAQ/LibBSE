@@ -94,6 +94,29 @@ int main(int argc, char **argv)
         std::filesystem::remove(file);
         MPI_Barrier(MPI_COMM_WORLD);
         if (rank == 0) std::filesystem::remove(directory);
+
+        // Coherent momentum sum must cancel across ranks before |P|^2.
+        // Unequal KS gaps ensure this is not accidentally the dipole operator.
+        velocity.gaps_ha = {rank == 0 ? 0.25 : 2.0};
+        velocity.values = rank == 0
+            ? std::vector<libbse::Complex>{{1,0},{0,1},{2,0}}
+            : std::vector<libbse::Complex>{{-1,0},{0,2},{1,0}};
+        auto coherent = libbse::make_distributed_amplitudes(MPI_COMM_WORLD, 2, 2);
+        coherent(0,0) = 1.0;
+        coherent(1,0) = rank == 0 ? libbse::Complex{0,1} : libbse::Complex{1,0};
+        const auto momenta = libbse::tda_transition_momenta_mpi(
+            MPI_COMM_WORLD, options, velocity, coherent);
+        if (rank == 0)
+        {
+            const std::vector<std::array<libbse::Complex,3>> expected{
+                {{{0,0},{0,3},{3,0}}}, {{{-1,1},{-1,2},{1,2}}}};
+            if (momenta.size() != expected.size())
+                throw std::runtime_error("wrong number of TDA momentum states");
+            for (std::size_t state=0; state<expected.size(); ++state)
+                for (int axis=0; axis<3; ++axis)
+                    if (std::abs(momenta[state][axis]-expected[state][axis]) > 1.e-13)
+                        throw std::runtime_error("coherent TDA momentum contraction failed");
+        }
     }
     catch (const std::exception &error)
     {

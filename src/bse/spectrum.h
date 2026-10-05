@@ -76,6 +76,14 @@ std::vector<std::array<Complex, 3>> velocity_gauge_transition_dipoles_mpi(
     const DistributedAmplitudes &amplitudes_x,
     const DistributedAmplitudes *amplitudes_y);
 
+// TDA P_S = sum_(kvc) p_cv(k) X_S(kvc), in atomic units. Reduce complex
+// amplitudes before taking squared magnitudes; no KS-gap, spin or k weights.
+// Results are returned on rank 0, like velocity_gauge_transition_dipoles_mpi.
+std::vector<std::array<Complex, 3>> tda_transition_momenta_mpi(
+    MPI_Comm comm, const InputParameters &options,
+    const FineVelocityMo &velocity_mo,
+    const DistributedAmplitudes &amplitudes);
+
 void write_velocity_gauge_outputs(
     const InputParameters &options,
     const librpa_int::Dataset &dataset,

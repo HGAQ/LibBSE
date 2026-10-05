@@ -225,6 +225,8 @@ void Parameter::parse(const std::string &contents, const fs::path &base_director
         inp.bse_q_approx_mode = parse_integer("bse_q_approx_mode", value);
     if (auto value = take("out_bse_ab"); !value.empty())
         inp.out_bse_ab = parse_boolean("out_bse_ab", value);
+    if (auto value = take("out_bse_eigenvectors"); !value.empty())
+        inp.out_bse_eigenvectors = parse_boolean("out_bse_eigenvectors", value);
     if (auto value = take("abs_gauge"); !value.empty()) inp.abs_gauge = lower(value);
     if (auto value = take("wavefunction_gauge"); !value.empty())
         inp.wavefunction_gauge = lower(value);
@@ -381,6 +383,7 @@ void Parameter::print(std::ostream &output) const
            << "  bse_ri_hartree: " << inp.bse_ri_hartree << '\n'
            << "  bse_use_fine_kgrid: " << inp.bse_use_fine_kgrid << '\n'
            << "  bse_q_approx_mode: " << inp.bse_q_approx_mode << '\n'
+           << "  out_bse_eigenvectors: " << inp.out_bse_eigenvectors << '\n'
            << "  abs_gauge: " << inp.abs_gauge << '\n'
            << "  wavefunction_gauge: " << inp.wavefunction_gauge << '\n'
            << "  spectrum_broadening_ev: "

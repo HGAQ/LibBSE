@@ -55,6 +55,9 @@ struct InputParameters
     int bse_use_fine_kgrid = 1;
     int bse_q_approx_mode = 0;
     bool out_bse_ab = false;
+    // Disable only text eigenvector output; all states are still solved and
+    // contracted for spectra. Existing spectrum-only restarts need these files.
+    bool out_bse_eigenvectors = true;
     std::string abs_gauge = "velocity";
     std::string wavefunction_gauge = "auto";
     double spectrum_broadening_ev = 0.10;

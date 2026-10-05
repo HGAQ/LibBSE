@@ -74,7 +74,8 @@ target_include_directories(libbse_core
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
-target_link_libraries(libbse_core PUBLIC rpa_lib)
+find_package(OpenMP REQUIRED COMPONENTS CXX)
+target_link_libraries(libbse_core PUBLIC rpa_lib OpenMP::OpenMP_CXX)
 
 add_executable(LibBSE driver/main.cpp)
 target_link_libraries(LibBSE PRIVATE libbse_core)

@@ -1,6 +1,7 @@
 #include "bse/distributed_amplitudes.h"
 #include "bse/elpa_solver.h"
 #include "bse/matrix_checks.h"
+#include "bse/spectrum.h"
 #include "interface/librpa_api.h"
 
 #include <mpi.h>
@@ -219,6 +220,37 @@ void test_skew_solver_reference(const librpa_int::BlacsCtxtHandler &blacs)
                   "second skew-solver reference eigenvalue differs");
 }
 
+void test_batched_redistribution(const librpa_int::BlacsCtxtHandler &blacs)
+{
+    require(libbse::amplitude_offset(367415, 15309, 15308) == 5624771543ULL,
+            "large amplitude offset overflowed before conversion");
+    librpa_int::ArrayDesc descriptor(blacs);
+    require(descriptor.init(11, 13, 2, 3, 0, 0) == 0, "invalid rectangular descriptor");
+    std::vector<Complex> global(11 * 13);
+    for (int c = 0; c < 13; ++c)
+        for (int r = 0; r < 11; ++r)
+            global[r + 11 * c] = Complex(1000 * c + r, c - 7 * r);
+    const auto source = localize(global, descriptor);
+    // Nonzero offsets, unequal pair partitions, and incomplete last batches.
+    for (int dimension : {7, 1})
+    {
+        const auto reference = libbse::redistribute_amplitudes(
+            MPI_COMM_WORLD, source, descriptor, 2, 3, dimension, 9);
+        for (int budget : {dimension, 2 * dimension})
+        {
+            const auto chunked = libbse::redistribute_amplitudes(
+                MPI_COMM_WORLD, source, descriptor, 2, 3, dimension, 9, budget);
+            require(chunked.values == reference.values, "batch sizes changed eigenvectors");
+            for (int state = 0; state < 9; ++state)
+                for (int pair = 0; pair < chunked.local_pairs; ++pair)
+                    require(chunked(state, pair) == global[
+                        2 + chunked.first_pair + pair + 11 * (3 + state)],
+                        "batched submatrix differs from independent global reference");
+        }
+    }
+    require(source == localize(global, descriptor), "redistribution modified source");
+}
+
 void test_tda_solver_residual(const librpa_int::BlacsCtxtHandler &blacs)
 {
     constexpr int dimension = 5;
@@ -229,7 +261,7 @@ void test_tda_solver_residual(const librpa_int::BlacsCtxtHandler &blacs)
     const auto vectors = globalize(solution.vectors_local, descriptor);
     const auto distributed = libbse::redistribute_amplitudes(
         MPI_COMM_WORLD, solution.vectors_local, descriptor,
-        0, 0, dimension, dimension);
+        0, 0, dimension, dimension, dimension);
 
     for (int state = 0; state < dimension; ++state)
         for (int local_pair = 0; local_pair < distributed.local_pairs;
@@ -243,6 +275,47 @@ void test_tda_solver_residual(const librpa_int::BlacsCtxtHandler &blacs)
                 1.0e-13,
                 "distributed TDA amplitude differs from ELPA eigenvector");
         }
+
+    const auto one_batch = libbse::redistribute_amplitudes(
+        MPI_COMM_WORLD, solution.vectors_local, descriptor, 0, 0, dimension, dimension);
+    require(one_batch.values == distributed.values, "ELPA vectors changed under batching");
+    libbse::InputParameters options;
+    options.nocc = 1;
+    options.nvirt = dimension;
+    libbse::FineVelocityMo velocity;
+    velocity.nk = 1;
+    velocity.nbands = dimension + 1;
+    velocity.first_pair = distributed.first_pair;
+    velocity.local_pairs = distributed.local_pairs;
+    velocity.gaps_ha.assign(distributed.local_pairs, 0.75);
+    velocity.values.resize(3 * distributed.local_pairs);
+    for (int axis = 0; axis < 3; ++axis)
+        for (int pair = 0; pair < distributed.local_pairs; ++pair)
+            velocity.values[axis * distributed.local_pairs + pair] =
+                Complex((axis + 1) * (pair + distributed.first_pair + 1), axis - pair);
+    const auto d1 = libbse::velocity_gauge_transition_dipoles_mpi(
+        MPI_COMM_WORLD, options, velocity, one_batch, nullptr);
+    const auto dn = libbse::velocity_gauge_transition_dipoles_mpi(
+        MPI_COMM_WORLD, options, velocity, distributed, nullptr);
+    const auto p1 = libbse::tda_transition_momenta_mpi(
+        MPI_COMM_WORLD, options, velocity, one_batch);
+    const auto pn = libbse::tda_transition_momenta_mpi(
+        MPI_COMM_WORLD, options, velocity, distributed);
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    if (rank == 0)
+    {
+        require(d1 == dn && p1 == pn, "batching changed x/y/z optical contractions");
+        const auto s1 = libbse::broaden_oscillator_spectrum(options,
+            libbse::calculate_oscillator_strengths(solution.energies_ry, d1, 1));
+        const auto sn = libbse::broaden_oscillator_spectrum(options,
+            libbse::calculate_oscillator_strengths(solution.energies_ry, dn, 1));
+        require(s1.size() == sn.size(), "spectrum dimensions changed");
+        for (std::size_t i = 0; i < s1.size(); ++i)
+            require(s1[i].energy_ev == sn[i].energy_ev
+                    && s1[i].directional == sn[i].directional,
+                    "batching changed x/y/z broadened spectra");
+    }
 
     for (int state = 0; state < dimension; ++state)
         for (int row = 0; row < dimension; ++row)
@@ -275,10 +348,10 @@ void test_full_solver_residual_and_metric(
     const auto vectors = globalize(solution.vectors_local, full_descriptor);
     const auto distributed_x = libbse::redistribute_amplitudes(
         MPI_COMM_WORLD, solution.vectors_local, full_descriptor,
-        0, dimension, dimension, dimension);
+        0, dimension, dimension, dimension, 2 * dimension);
     const auto distributed_y = libbse::redistribute_amplitudes(
         MPI_COMM_WORLD, solution.vectors_local, full_descriptor,
-        dimension, dimension, dimension, dimension);
+        dimension, dimension, dimension, dimension, 2 * dimension);
 
     for (int state = 0; state < dimension; ++state)
         for (int local_pair = 0;
@@ -361,6 +434,7 @@ int main(int argc, char **argv)
             librpa_int::BlacsCtxtHandler blacs(MPI_COMM_WORLD);
             blacs.init();
             blacs.set_square_grid();
+            test_batched_redistribution(blacs);
             test_distributed_matrix_checks(blacs);
             test_skew_solver_reference(blacs);
             test_tda_solver_residual(blacs);

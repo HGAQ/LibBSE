@@ -321,6 +321,7 @@ void run_bse(const InputParameters &options,
             write_energies(energy_file(options, "ipa", false),
                            channel.energies);
         }
+        if (options.out_bse_eigenvectors)
         {
             ScopedTimer timer(global::profiler,
                               "write_tda_amplitudes",
@@ -572,6 +573,7 @@ void run_bse(const InputParameters &options,
                           << (qp.direct_gap_ry - channel.energies.front())
                                  * PARAM.constants.ry_to_ev << '\n';
             }
+            if (options.out_bse_eigenvectors)
             {
                 ScopedTimer timer(global::profiler,
                                   "write_tda_amplitudes",
@@ -682,6 +684,7 @@ void run_bse(const InputParameters &options,
                           << (qp.direct_gap_ry - channel.energies.front())
                                  * PARAM.constants.ry_to_ev << '\n';
             }
+            if (options.out_bse_eigenvectors)
             {
                 ScopedTimer timer(global::profiler,
                                   "write_full_amplitudes",

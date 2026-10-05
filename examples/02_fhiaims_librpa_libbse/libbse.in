@@ -1,0 +1,22 @@
+# FHI-aims -> LibRPA -> LibBSE: static TDA, 2x2x2
+input_dir                  aims_export
+input_format               fhi_aims
+qp_data                    energy_qp
+qp_format                  energy_qp
+screened_format            librpa_wc
+screened_dir               librpa.d
+output_dir                 libbse.d
+nocc                       4
+nvirt                      3
+bse_nstates                -1
+bse_solver                 elpa
+bse_spin_types             singlet
+bse_tda                    tda
+bse_ri_hartree             1
+bse_use_fine_kgrid         0
+abs_gauge                  velocity
+wavefunction_gauge         native
+spectrum_broadening_ev     0.10
+spectrum_energy_step_ev    0.01
+spectrum_energy_min_ev     0.0
+spectrum_energy_max_ev     12.0

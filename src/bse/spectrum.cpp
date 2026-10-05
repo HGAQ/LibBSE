@@ -396,6 +396,31 @@ std::vector<std::array<Complex, 3>> velocity_gauge_transition_dipoles_mpi(
     return result;
 }
 
+std::vector<std::array<Complex, 3>> tda_transition_momenta_mpi(
+    MPI_Comm comm, const InputParameters &options,
+    const FineVelocityMo &velocity_mo,
+    const DistributedAmplitudes &amplitudes)
+{
+    validate_distributed_velocity_inputs(
+        comm, options, velocity_mo, amplitudes, nullptr);
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    const int nstates = amplitudes.nstates;
+    std::vector<std::array<Complex, 3>> local(static_cast<std::size_t>(nstates));
+#pragma omp parallel for schedule(static)
+    for (int state = 0; state < nstates; ++state)
+        for (int pair = 0; pair < amplitudes.local_pairs; ++pair)
+            for (int axis = 0; axis < 3; ++axis)
+                local[state][axis] += velocity_mo.values[velocity_index(
+                    axis, pair, velocity_mo.local_pairs)] * amplitudes(state, pair);
+    std::vector<std::array<Complex, 3>> result;
+    if (rank == 0) result.resize(static_cast<std::size_t>(nstates));
+    // FUNNELED: all MPI calls are outside the OpenMP parallel region.
+    MPI_Reduce(local.data(), rank == 0 ? result.data() : nullptr,
+               3 * nstates, MPI_C_DOUBLE_COMPLEX, MPI_SUM, 0, comm);
+    return result;
+}
+
 FineVelocityMo prepare_fine_velocity_mo(
     const InputParameters &options, const QuasiparticleBands &qp,
     const std::shared_ptr<librpa_int::Dataset> &dataset,
@@ -739,6 +764,9 @@ void write_velocity_gauge_outputs(
     auto dipoles = velocity_gauge_transition_dipoles_mpi(
         dataset.comm_h.comm, options, velocity,
         amplitudes_x, amplitudes_y);
+    const auto momenta = amplitudes_y == nullptr
+        ? tda_transition_momenta_mpi(dataset.comm_h.comm, options, velocity, amplitudes_x)
+        : std::vector<std::array<Complex, 3>>{};
     std::vector<double> local_weight1(static_cast<std::size_t>(velocity.nk), 0.0);
     std::vector<double> local_weight2(static_cast<std::size_t>(velocity.nk), 0.0);
     std::vector<long long> local_contribution_indices;
@@ -864,6 +892,25 @@ void write_velocity_gauge_outputs(
               << std::setprecision(10) << oscillator_sum << '\n';
 
     const fs::path output_dir(options.output_dir);
+    if (amplitudes_y == nullptr)
+    {
+        const auto file = output_dir / ("momentum_strength_" + label + ".dat");
+        std::ofstream output(file);
+        if (!output) throw std::runtime_error("cannot write " + file.string());
+        output << "# TDA P_S = sum_(kvc) p_cv X_S; atomic units; no KS-gap denominator\n"
+               << "# No spin or k-point weights; Nk = " << velocity.nk
+               << "; optically forbidden triplet strengths are zero\n"
+               << "# state energy_eV |P_x|^2 |P_y|^2 |P_z|^2\n"
+               << std::scientific << std::setprecision(16);
+        for (int state = 0; state < nstates; ++state)
+        {
+            output << state + 1 << ' ' << all_energies[state] * PARAM.constants.ry_to_ev;
+            for (int axis = 0; axis < 3; ++axis)
+                output << ' ' << (spin_type == "triplet" ? 0.0 : std::norm(momenta[state][axis]));
+            output << '\n';
+        }
+        if (!output) throw std::runtime_error("cannot write " + file.string());
+    }
     write_dipoles(output_dir / ("trans_dipole_" + label + ".dat"),
                   all_energies, dipoles, means);
     write_oscillator_strengths(

@@ -1,0 +1,25 @@
+# ABACUS -> LibRPA -> LibBSE: effective dynamical TDA, 2x2x2
+input_dir                  OUT.librpa_chi0
+input_format               librpa
+qp_data                    energy_qp
+qp_format                  energy_qp
+screened_format            librpa_chi0
+screened_dir               librpa.d/chi0_static
+output_dir                 libbse.d
+nocc                       4
+nvirt                      4
+bse_nstates                -1
+bse_solver                 elpa
+bse_spin_types             singlet
+bse_tda                    tda
+bse_ri_hartree             1
+bse_use_fine_kgrid         0
+abs_gauge                  velocity
+wavefunction_gauge         first_k
+spectrum_broadening_ev     0.10
+spectrum_energy_step_ev    0.01
+spectrum_energy_min_ev     0.0
+spectrum_energy_max_ev     12.0
+chi0_coulomb_metric        full
+chi0_headwing              true
+bse_plasma_energy_ev       15

@@ -1,0 +1,56 @@
+# Native aims GW: keep geometry, basis, grid and frequency_points matched to control.in.
+# Do not add output librpa bse: it is incompatible with native W/chi0 export.
+xc pbe
+relativistic atomic_zora scalar
+override_illconditioning true
+k_grid 3 3 3
+qpe_calc gw_expt
+frequency_points 16
+anacon_type 0
+periodic_gw_optimize_kgrid_symmetry inverse
+state_lower_limit 11
+state_upper_limit 18
+periodic_gw_output_w .true.
+
+output band 0.00000000 0.00000000 0.00000000 0.00000000 0.00000000 0.75000000 4
+output band 0.00000000 0.25000000 0.00000000 0.00000000 0.25000000 0.75000000 4
+output band 0.00000000 0.50000000 0.00000000 0.00000000 0.50000000 0.75000000 4
+output band 0.00000000 0.75000000 0.00000000 0.00000000 0.75000000 0.75000000 4
+output band 0.25000000 0.00000000 0.00000000 0.25000000 0.00000000 0.75000000 4
+output band 0.25000000 0.25000000 0.00000000 0.25000000 0.25000000 0.75000000 4
+output band 0.25000000 0.50000000 0.00000000 0.25000000 0.50000000 0.75000000 4
+output band 0.25000000 0.75000000 0.00000000 0.25000000 0.75000000 0.75000000 4
+output band 0.50000000 0.00000000 0.00000000 0.50000000 0.00000000 0.75000000 4
+output band 0.50000000 0.25000000 0.00000000 0.50000000 0.25000000 0.75000000 4
+output band 0.50000000 0.50000000 0.00000000 0.50000000 0.50000000 0.75000000 4
+output band 0.50000000 0.75000000 0.00000000 0.50000000 0.75000000 0.75000000 4
+output band 0.75000000 0.00000000 0.00000000 0.75000000 0.00000000 0.75000000 4
+output band 0.75000000 0.25000000 0.00000000 0.75000000 0.25000000 0.75000000 4
+output band 0.75000000 0.50000000 0.00000000 0.75000000 0.50000000 0.75000000 4
+output band 0.75000000 0.75000000 0.00000000 0.75000000 0.75000000 0.75000000 4
+
+species        Si
+  cut_free_atom finite 4.0
+  nucleus             14
+  mass                28.0855
+  l_hartree           6
+  cut_pot             4.0  2.0  1.0
+  basis_dep_cutoff    1e-4
+  radial_base         42 7.0
+  radial_multiplier   2
+  angular_grids       specified
+    division   0.4121   50
+    division   0.7665  110
+    division   1.0603  194
+    division   1.2846  302
+    division   1.4125  434
+    outer_grid         434
+  valence      3  s   2.
+  valence      3  p   2.
+  ion_occ      3  s   1.
+  ion_occ      3  p   1.
+  hydro        3  d   4.2
+  hydro        2  p   1.4
+  hydro        4  f   6.2
+  ionic        3  s   auto
+  for_aux      hydro 5 g 9.4

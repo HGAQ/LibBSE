@@ -3,6 +3,8 @@
 #include "parameter/parameter.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <iostream>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -81,119 +83,177 @@ DistributedAmplitudes redistribute_amplitudes(
     const std::vector<Complex> &source,
     const librpa_int::ArrayDesc &source_descriptor,
     int row_offset, int column_offset,
-    int dimension, int nstates)
+    int dimension, int nstates, int max_batch_elements)
 {
-    if (row_offset < 0 || column_offset < 0
-        || row_offset + dimension > source_descriptor.m()
-        || column_offset + nstates > source_descriptor.n()
-        || source.size()
-               != static_cast<std::size_t>(source_descriptor.lld())
-                      * source_descriptor.n_loc())
+    static_assert(sizeof(std::size_t) >= sizeof(std::uint64_t),
+                  "large eigenvector arrays require 64-bit addresses");
+    int valid = dimension > 0 && nstates > 0
+        && row_offset >= 0 && row_offset <= source_descriptor.m()
+        && column_offset >= 0 && column_offset <= source_descriptor.n()
+        && dimension <= source_descriptor.m() - row_offset
+        && nstates <= source_descriptor.n() - column_offset
+        && source.size() == static_cast<std::size_t>(source_descriptor.lld())
+                              * source_descriptor.n_loc();
+    int all_valid = 0;
+    MPI_Allreduce(&valid, &all_valid, 1, MPI_INT, MPI_MIN, comm);
+    if (!all_valid)
         throw std::invalid_argument(
             "invalid block-cyclic eigenvector block for redistribution");
 
-    int mpi_size = 1;
+    int rank = 0, mpi_size = 1;
+    MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &mpi_size);
-    auto result = make_distributed_amplitudes(comm, dimension, nstates);
-    std::vector<std::vector<int>> indices(static_cast<std::size_t>(mpi_size));
-    std::vector<std::vector<Complex>> values(static_cast<std::size_t>(mpi_size));
+    int min_budget = 0, max_budget = 0;
+    MPI_Allreduce(&max_batch_elements, &min_budget, 1, MPI_INT, MPI_MIN, comm);
+    MPI_Allreduce(&max_batch_elements, &max_budget, 1, MPI_INT, MPI_MAX, comm);
+    if (min_budget <= 0 || min_budget != max_budget)
+        throw std::invalid_argument("redistribution batch budgets must agree and be positive");
 
-    for (int local_column = 0;
-         local_column < source_descriptor.n_loc(); ++local_column)
+    struct Row
     {
-        const int global_column = source_descriptor.indx_l2g_c(local_column);
-        if (global_column < column_offset
-            || global_column >= column_offset + nstates)
+        int source_row, destination, pair, destination_pairs;
+    };
+    std::vector<Row> rows;
+    std::vector<int> rows_per_destination(mpi_size, 0);
+    for (int row = 0; row < source_descriptor.m_loc(); ++row)
+    {
+        const int global_row = source_descriptor.indx_l2g_r(row);
+        if (global_row < row_offset || global_row >= row_offset + dimension)
             continue;
-        const int state = global_column - column_offset;
-        for (int local_row = 0; local_row < source_descriptor.m_loc();
-             ++local_row)
+        const int pair = global_row - row_offset;
+        const int destination = pair_owner(pair, dimension, mpi_size);
+        const auto partition = pair_partition(dimension, mpi_size, destination);
+        rows.push_back({row, destination, pair - partition.first, partition.count});
+        ++rows_per_destination[destination];
+    }
+    // The descriptor's local-to-global column mapping is monotone. Cache it
+    // once; each local column is packed in exactly one batch.
+    std::vector<std::pair<int, int>> columns;
+    for (int column = 0; column < source_descriptor.n_loc(); ++column)
+    {
+        const int state = source_descriptor.indx_l2g_c(column) - column_offset;
+        if (state >= 0 && state < nstates) columns.emplace_back(state, column);
+    }
+    const auto partition = pair_partition(dimension, mpi_size, rank);
+    const int local_rows = std::max(static_cast<int>(rows.size()), partition.count);
+    int global_rows = 0;
+    MPI_Allreduce(&local_rows, &global_rows, 1, MPI_INT, MPI_MAX, comm);
+    if (max_batch_elements < global_rows)
+        throw std::invalid_argument("redistribution batch budget cannot hold one state");
+    // Bound BOTH sends (block-cyclic rows) and receives (pair-block rows).
+    // Every rank uses the same bound, including ranks with no local data, so
+    // collective calls always cover the same state interval. Each batch's
+    // total count and all prefix displacements fit MPI's signed int interface.
+    const int batch_states = std::min(nstates, max_batch_elements / global_rows);
+    if (rank == 0)
+        std::cout << "Eigenvector redistribution: " << batch_states
+                  << " states/batch, " << max_batch_elements
+                  << " elements/rank exchange limit\n";
+    auto result = make_distributed_amplitudes(comm, dimension, nstates);
+    std::vector<int> send_counts(mpi_size), receive_counts(mpi_size);
+    std::vector<int> send_offsets(mpi_size), receive_offsets(mpi_size), cursor(mpi_size);
+    // Flat batch buffers avoid the old all-state per-destination vectors and
+    // their extra flattened copies. Capacity is reused, bounded by the budget.
+    std::vector<std::uint64_t> send_indices, receive_indices;
+    std::vector<Complex> send_values, receive_values;
+    std::vector<unsigned char> assigned;
+    // Reserve proven maxima once: vector growth must not double capacity past
+    // the exchange budget when column ownership changes between batches.
+    const auto max_send = std::min(static_cast<std::size_t>(batch_states), columns.size())
+                          * rows.size();
+    const auto max_receive = static_cast<std::size_t>(batch_states) * partition.count;
+    send_indices.reserve(max_send);
+    send_values.reserve(max_send);
+    receive_indices.reserve(max_receive);
+    receive_values.reserve(max_receive);
+    assigned.reserve(max_receive);
+    std::size_t column_begin = 0;
+    for (int first = 0; first < nstates; )
+    {
+        const int count = std::min(batch_states, nstates - first);
+        const int end = first + count;
+        std::size_t column_end = column_begin;
+        while (column_end < columns.size() && columns[column_end].first < end)
+            ++column_end;
+        for (int destination = 0; destination < mpi_size; ++destination)
+            send_counts[destination] = static_cast<int>(
+                (column_end - column_begin) * rows_per_destination[destination]);
+        MPI_Alltoall(send_counts.data(), 1, MPI_INT,
+                     receive_counts.data(), 1, MPI_INT, comm);
+
+        std::int64_t total_send = 0, total_receive = 0;
+        valid = 1;
+        for (int process = 0; process < mpi_size; ++process)
         {
-            const int global_row = source_descriptor.indx_l2g_r(local_row);
-            if (global_row < row_offset
-                || global_row >= row_offset + dimension)
-                continue;
-            const int pair = global_row - row_offset;
-            const int destination = pair_owner(pair, dimension, mpi_size);
-            const PairPartition destination_partition =
-                pair_partition(dimension, mpi_size, destination);
-            indices[destination].push_back(
-                state * destination_partition.count
-                + pair - destination_partition.first);
-            values[destination].push_back(
-                source[static_cast<std::size_t>(local_column)
-                           * source_descriptor.lld()
-                       + local_row]);
+            // Validate prefixes before converting, never after int addition.
+            if (send_counts[process] < 0 || receive_counts[process] < 0
+                || total_send > max_batch_elements || total_receive > max_batch_elements)
+            {
+                valid = 0;
+                break;
+            }
+            send_offsets[process] = static_cast<int>(total_send);
+            receive_offsets[process] = static_cast<int>(total_receive);
+            total_send += send_counts[process];
+            total_receive += receive_counts[process];
         }
-    }
+        valid = valid && total_send <= max_batch_elements
+            && total_receive <= max_batch_elements
+            && static_cast<std::size_t>(total_receive)
+                   == static_cast<std::size_t>(count) * result.local_pairs;
+        MPI_Allreduce(&valid, &all_valid, 1, MPI_INT, MPI_MIN, comm);
+        if (!all_valid)
+            throw std::runtime_error("invalid distributed eigenvector batch counts");
 
-    std::vector<int> send_counts(static_cast<std::size_t>(mpi_size));
-    for (int destination = 0; destination < mpi_size; ++destination)
-    {
-        if (indices[destination].size()
-            > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-            throw std::overflow_error(
-                "distributed amplitude message exceeds the MPI count limit");
-        send_counts[destination] =
-            static_cast<int>(indices[destination].size());
-    }
-    std::vector<int> receive_counts(static_cast<std::size_t>(mpi_size));
-    MPI_Alltoall(send_counts.data(), 1, MPI_INT,
-                 receive_counts.data(), 1, MPI_INT, comm);
+        send_indices.resize(static_cast<std::size_t>(total_send));
+        send_values.resize(static_cast<std::size_t>(total_send));
+        receive_indices.resize(static_cast<std::size_t>(total_receive));
+        receive_values.resize(static_cast<std::size_t>(total_receive));
+        cursor = send_offsets;
+        for (std::size_t c = column_begin; c < column_end; ++c)
+        {
+            const auto [state, column] = columns[c];
+            for (const auto &row : rows)
+            {
+                const int position = cursor[row.destination]++;
+                // Widen BEFORE multiplying: final offsets may exceed INT_MAX
+                // even though this batch's MPI counts and displacements do not.
+                send_indices[position] = amplitude_offset(
+                    state, row.destination_pairs, row.pair);
+                send_values[position] = source[static_cast<std::size_t>(column)
+                                                * source_descriptor.lld() + row.source_row];
+            }
+        }
+        MPI_Alltoallv(send_indices.data(), send_counts.data(), send_offsets.data(),
+                      MPI_UINT64_T, receive_indices.data(), receive_counts.data(),
+                      receive_offsets.data(), MPI_UINT64_T, comm);
+        MPI_Alltoallv(send_values.data(), send_counts.data(), send_offsets.data(),
+                      MPI_C_DOUBLE_COMPLEX, receive_values.data(),
+                      receive_counts.data(), receive_offsets.data(),
+                      MPI_C_DOUBLE_COMPLEX, comm);
 
-    std::vector<int> send_offsets(static_cast<std::size_t>(mpi_size), 0);
-    std::vector<int> receive_offsets(static_cast<std::size_t>(mpi_size), 0);
-    for (int process = 1; process < mpi_size; ++process)
-    {
-        send_offsets[process] = send_offsets[process - 1]
-                                + send_counts[process - 1];
-        receive_offsets[process] = receive_offsets[process - 1]
-                                   + receive_counts[process - 1];
-    }
-    const long long total_send_large = std::accumulate(
-        send_counts.begin(), send_counts.end(), 0LL);
-    const long long total_receive_large = std::accumulate(
-        receive_counts.begin(), receive_counts.end(), 0LL);
-    if (total_send_large > std::numeric_limits<int>::max()
-        || total_receive_large > std::numeric_limits<int>::max())
-        throw std::overflow_error(
-            "distributed amplitude exchange exceeds the MPI count limit");
-    const int total_send = static_cast<int>(total_send_large);
-    const int total_receive = static_cast<int>(total_receive_large);
-    if (static_cast<std::size_t>(total_receive) != result.values.size())
-        throw std::runtime_error(
-            "incomplete distributed eigenvector redistribution");
-
-    std::vector<int> send_indices(static_cast<std::size_t>(total_send));
-    std::vector<Complex> send_values(static_cast<std::size_t>(total_send));
-    for (int destination = 0; destination < mpi_size; ++destination)
-    {
-        std::copy(indices[destination].begin(), indices[destination].end(),
-                  send_indices.begin() + send_offsets[destination]);
-        std::copy(values[destination].begin(), values[destination].end(),
-                  send_values.begin() + send_offsets[destination]);
-    }
-    std::vector<int> receive_indices(static_cast<std::size_t>(total_receive));
-    std::vector<Complex> receive_values(static_cast<std::size_t>(total_receive));
-    MPI_Alltoallv(send_indices.data(), send_counts.data(), send_offsets.data(),
-                  MPI_INT, receive_indices.data(), receive_counts.data(),
-                  receive_offsets.data(), MPI_INT, comm);
-    MPI_Alltoallv(send_values.data(), send_counts.data(), send_offsets.data(),
-                  MPI_C_DOUBLE_COMPLEX, receive_values.data(),
-                  receive_counts.data(), receive_offsets.data(),
-                  MPI_C_DOUBLE_COMPLEX, comm);
-
-    std::vector<unsigned char> assigned(result.values.size(), 0);
-    for (int index = 0; index < total_receive; ++index)
-    {
-        const int local_index = receive_indices[index];
-        if (local_index < 0
-            || static_cast<std::size_t>(local_index) >= result.values.size()
-            || assigned[local_index] != 0)
-            throw std::runtime_error(
-                "invalid distributed eigenvector ownership");
-        result.values[local_index] = receive_values[index];
-        assigned[local_index] = 1;
+        const auto base = amplitude_offset(first, result.local_pairs, 0);
+        assigned.assign(static_cast<std::size_t>(total_receive), 0);
+        valid = 1;
+        for (std::size_t i = 0; i < receive_indices.size(); ++i)
+        {
+            const auto index = receive_indices[i];
+            if (index < base || index - base >= assigned.size()
+                || assigned[static_cast<std::size_t>(index - base)] != 0)
+            {
+                valid = 0;
+                break;
+            }
+            // Write directly into the final state-major array. The duplicate
+            // check is batch-local, not another array spanning all eigenstates.
+            result.values[static_cast<std::size_t>(index)] = receive_values[i];
+            assigned[static_cast<std::size_t>(index - base)] = 1;
+        }
+        MPI_Allreduce(&valid, &all_valid, 1, MPI_INT, MPI_MIN, comm);
+        if (!all_valid)
+            throw std::runtime_error("invalid distributed eigenvector ownership");
+        column_begin = column_end;
+        first = end;
     }
     return result;
 }

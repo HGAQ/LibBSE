@@ -17,13 +17,15 @@ DistributedAmplitudes make_distributed_amplitudes(
 
 // Redistribute a block of a two-dimensional block-cyclic matrix into the
 // pair-block layout used by spectrum analysis and amplitude files. Offsets are
-// zero based. No rank receives the complete eigenvector matrix.
+// zero based. Each rank receives only its pair block. The per-rank element
+// budget bounds both send and receive buffers; a smaller value also permits
+// exercising multiple batches on small matrices. Must agree on all ranks.
 DistributedAmplitudes redistribute_amplitudes(
     MPI_Comm comm,
     const std::vector<Complex> &source,
     const librpa_int::ArrayDesc &source_descriptor,
     int row_offset, int column_offset,
-    int dimension, int nstates);
+    int dimension, int nstates, int max_batch_elements = 4 * 1024 * 1024);
 
 void write_distributed_amplitudes(
     const std::filesystem::path &file,
