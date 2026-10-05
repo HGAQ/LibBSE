@@ -31,6 +31,11 @@ foreach(required_dir IN ITEMS
   endif()
 endforeach()
 
+# LibRPA's FindLibRI caches the resolved path separately. Keep it synchronized
+# with the shared selection, including when reconfiguring an existing build.
+set(LibRI_INCLUDE_DIR "${LIBRI_INCLUDE_DIR}" CACHE PATH
+    "Resolved LibRI include directory shared by LibBSE and LibRPA" FORCE)
+
 # LibRPA is built from the checkout containing the requested public include
 # directory. LibBSE itself consumes only headers reachable from that directory.
 get_filename_component(LIBRPA_SOURCE_ROOT "${LIBRPA_INCLUDE_DIR}/.." ABSOLUTE)

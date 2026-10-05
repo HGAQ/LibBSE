@@ -55,8 +55,8 @@ LibBSE 读取已有数据，不负责执行 DFT 或 GW。完整计算流程由 `
 ```text
 $LIBBSE_WORKSPACE/
 ├── LibBSE/                    # 当前项目；examples/ 是本教程的输入来源
+│   └── thirdparty/LibRI/include/ # LibBSE 和 LibRPA 共用的 LibRI 头文件
 ├── LibRPA/                    # 带所需 reader API 的完整兼容源码
-├── LibRI/include/             # 匹配的外部 LibRI 头文件
 ├── deps/                      # 可选：数学库和 ELPA 源码
 └── tutorial_runs.XXXXXX/       # 第 4 节创建的运行副本
 ```
@@ -120,7 +120,7 @@ LibBSE 的 CMake 会把 LibRPA 作为子项目编译，所以 `LIBRPA_INCLUDE_DI
 export LIBBSE_WORKSPACE="/path/to/workspace"
 export LIBBSE_SRC="$LIBBSE_WORKSPACE/LibBSE"
 export LIBRPA_SRC="$LIBBSE_WORKSPACE/LibRPA"
-export LIBRI_INC="$LIBBSE_WORKSPACE/LibRI/include"
+export LIBRI_INC="$LIBBSE_SRC/thirdparty/LibRI/include"
 export ELPA_PREFIX="/path/to/elpa/install"
 export SCALAPACK_DIR="/path/to/scalapack/lib"
 export BLAS_LIB="/path/to/openblas/lib/libopenblas.so"
@@ -252,6 +252,8 @@ ldd "$ELPA_PREFIX/lib/libelpa_openmp.so"
 ### 2.4 头文件依赖与 GreenX
 
 `LibRI`、`LibComm`、`cereal` 在当前路径中作为头文件依赖使用，不需要为它们单独执行 `make install`。正确的 include 根目录下应分别能看到 `RI/`、`Comm/` 和 `cereal/`。LibBSE 的 CMake 会检查目录存在，LibRPA 的查找模块进一步检查对应头文件。
+
+LibBSE 和 LibRPA 应共用 `$LIBBSE_SRC/thirdparty/LibRI/include`。LibBSE 的嵌入式 LibRPA 构建会沿用同一个 `LIBRI_INCLUDE_DIR`；第 3.2 节单独编译 LibRPA 时也传入同一个 `LIBRI_INC`。LibRI 是头文件库，这里的“共用”指使用相同的头文件，而不是链接独立的 LibRI 二进制库。
 
 GreenX 是编译型依赖。LibRPA 默认通过 `add_subdirectory(thirdparty/greenX)` 构建它，所以看到 Fortran 编译输出是正常现象。不要因为 LibBSE 主体是 C++ 就去掉 Fortran 编译器，也不要为这一条路线设置 `LIBRPA_USE_EXTERNAL_GREENX=ON`。仅装一个外部 `librpa` 库文件不够：本项目还需要完整源码与公共头文件。
 
