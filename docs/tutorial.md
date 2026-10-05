@@ -50,16 +50,15 @@ LibBSE 读取已有数据，不负责执行 DFT 或 GW。完整计算流程由 `
 
 ### 1.3 目录结构与算例
 
-本地目录布局为：
+建议将源码放在同一个工作目录中；第 2.2 节用 `LIBBSE_WORKSPACE` 指定该目录：
 
 ```text
-/work/users/l/s/lsr/LibBSE/
-├── 1_LibBSE/
-│   ├── LibBSE/                 # 当前项目；examples/ 是本教程的输入来源
-│   ├── LibRPA/                 # 带公共 include/ 的完整源码
-│   └── LibRI/LibRI/include/    # 当前使用的外部 LibRI 头文件
-├── 3_LibBSE_template/          # 8 个干净模板
-└── 3_LibBSE_templatetest/      # 已完成的计算、日志和验证记录
+$LIBBSE_WORKSPACE/
+├── LibBSE/                    # 当前项目；examples/ 是本教程的输入来源
+├── LibRPA/                    # 带所需 reader API 的完整兼容源码
+├── LibRI/include/             # 匹配的外部 LibRI 头文件
+├── deps/                      # 可选：数学库和 ELPA 源码
+└── tutorial_runs.XXXXXX/       # 第 4 节创建的运行副本
 ```
 
 ABACUS 或 FHI-aims 产生 KS 波函数、RI 系数、Coulomb 和速度/动量数据；LibRPA 或 FHI-aims GW 产生准粒子（QP）能量与屏蔽数据；LibBSE 读取这些数据，构造 BSE 矩阵、调用 ELPA 并输出激发能和光谱。
@@ -93,14 +92,14 @@ ABACUS 或 FHI-aims 产生 KS 波函数、RI 系数、Coulomb 和速度/动量�
 | ScaLAPACK/BLACS | 跨 MPI 进程分布的矩阵操作和通信 | 本地 AOCL 的 `lib_LP64/libscalapack.so`；必须与所用 MPI 兼容 |
 | ELPA | TDA 和完整 BSE 的分布式本征值求解 | 本地安装或按 2.3 节编译；确认 `libelpa_openmp.so` 与 skew 接口 |
 | LibRPA | 输入 reader、GW/响应/屏蔽基础库；另有独立 GW 驱动 | 同级完整源码，必须同时有 `include/` 和 `CMakeLists.txt` |
-| LibRI | 局域 RI 张量收缩 | 当前用 `LibRI/LibRI/include`；作为头文件依赖参与编译 |
+| LibRI | 局域 RI 张量收缩 | 通过 `LIBRI_INC` 指定 include 根目录；作为头文件依赖参与编译 |
 | LibComm | LibRPA/LibRI 所需的通信组件 | 使用 `LibRPA/thirdparty/LibComm/include` |
 | cereal | C++ 对象/张量序列化 | 使用 `LibRPA/thirdparty/cereal-1.3.0/include`，不需单独编译 |
 | GreenX | minimax 时间/频率网格等功能 | 使用 `LibRPA/thirdparty/greenX`，随 LibRPA 构建，不必手动安装 |
 | Python、NumPy、h5py | 数据转换与数值检查；h5py 读取动量 HDF5 | 按 2.2 节导入检查或安装到虚拟环境 |
 | ABACUS / FHI-aims | 产生 KS、RI、Coulomb、QP 等物理输入 | 第 4 节指定已有兼容版本；仅运行对应路线时需要 |
 
-本地完整源码已经提供 LibRI、LibComm、cereal 和 GreenX。这些组件不应仅凭同名用任意版本替换，尤其当前 LibBSE 使用了本地 LibRPA 的公共 API。迁移机器时先携带这一组兼容源码及模板，再替换编译器、MPI、数学库和路径。
+需准备相互兼容的 LibRPA、LibRI、LibComm、cereal 和 GreenX 源码。这些组件不应仅凭同名用任意版本替换，尤其当前 LibBSE 需要 LibRPA 的 `include/librpa_file_reader.hpp`、`librpa::FileReaderOptions` 和 `librpa::read_dataset_from_files`，以及 LibRI 的 `RI/physics/LR.h`。本仓库尚未固定兼容的 LibRPA/LibRI 发布版本或提交号；请向维护者获取匹配的源码，并记录各仓库的提交号以便复现。迁移机器时先携带这一组兼容源码及模板，再替换编译器、MPI、数学库和路径。
 
 - CMake ≥ 3.16、支持 C++17 的编译器、Fortran 编译器、MPI 和 OpenMP。
 - BLAS、LAPACK、ScaLAPACK；本地参考配置使用 LP64 数学库。
@@ -113,21 +112,24 @@ LibBSE 的 CMake 会把 LibRPA 作为子项目编译，所以 `LIBRPA_INCLUDE_DI
 
 ### 2.2 集群环境配置
 
-在支持 `module` 的 Bash 会话中执行；后续命令沿用这些变量：
+先将下面所有 `/path/to/...` 占位路径替换为实际绝对路径。`LIBBSE_WORKSPACE` 是可写的源码工作目录；ELPA 和数学库可安装在其他位置，因此单独配置。若源码布局不同，可分别修改 `LIBBSE_SRC`、`LIBRPA_SRC` 和 `LIBRI_INC`。
+
+在支持 `module` 的 Bash 会话中执行；模块名和版本是集群示例，应按所在机器调整。后续命令沿用这些变量：
 
 ```bash
-export LIBBSE_SRC=/work/users/l/s/lsr/LibBSE/1_LibBSE/LibBSE
-export LIBRPA_SRC=/work/users/l/s/lsr/LibBSE/1_LibBSE/LibRPA
-export LIBRI_INC=/work/users/l/s/lsr/LibBSE/1_LibBSE/LibRI/LibRI/include
-export ELPA_PREFIX=/work/users/l/s/lsr/b_BSE/elpa-2024.05.001/build/install
-export SCALAPACK_DIR=/nas/sycamore/apps/aocl/5.2.0/lib_LP64
-export BLAS_LIB=/usr/lib64/libopenblas.so
+export LIBBSE_WORKSPACE="/path/to/workspace"
+export LIBBSE_SRC="$LIBBSE_WORKSPACE/LibBSE"
+export LIBRPA_SRC="$LIBBSE_WORKSPACE/LibRPA"
+export LIBRI_INC="$LIBBSE_WORKSPACE/LibRI/include"
+export ELPA_PREFIX="/path/to/elpa/install"
+export SCALAPACK_DIR="/path/to/scalapack/lib"
+export BLAS_LIB="/path/to/openblas/lib/libopenblas.so"
 export SCALAPACK_LIB="$SCALAPACK_DIR/libscalapack.so"
 
 module purge
 module load gcc/15.2.0 openmpi/5.0.9/gcc_15.2.0 aocl/5.2.0
 module load hdf5/2.1.1/gcc_15.2.0
-export LD_LIBRARY_PATH="$ELPA_PREFIX/lib:$SCALAPACK_DIR:/nas/sycamore/apps/scalapack/2.2.2_gcc_15.2.0/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$ELPA_PREFIX/lib:$(dirname "$BLAS_LIB"):$SCALAPACK_DIR:${LD_LIBRARY_PATH:-}"
 export OMPI_MCA_coll='^hcoll'
 
 command -v cmake make gcc g++ gfortran mpicc mpicxx mpifort mpirun python3
@@ -136,7 +138,9 @@ mpicxx --showme:command
 mpifort --showme:command
 python3 -c 'import numpy, h5py; print(numpy.__version__, h5py.__version__)'
 test -f "$LIBRPA_SRC/CMakeLists.txt"
+test -f "$LIBRPA_SRC/include/librpa_file_reader.hpp"
 test -f "$LIBRI_INC/RI/ri/RI_Tools.h"
+test -f "$LIBRI_INC/RI/physics/LR.h"
 test -d "$LIBRPA_SRC/thirdparty/LibComm/include"
 test -f "$LIBRPA_SRC/thirdparty/cereal-1.3.0/include/cereal/cereal.hpp"
 test -f "$LIBRPA_SRC/thirdparty/greenX/CMakeLists.txt"
@@ -155,7 +159,7 @@ export PYTHON="$HOME/.venvs/libbse/bin/python"
 "$PYTHON" -c 'import numpy, h5py; print("Python dependencies ready")'
 ```
 
-不要混用不同 MPI 实现或不兼容的编译器运行时。更换编译器、MPI 或数学库后，使用新的 build 目录。下面显式指定本地参考构建实际找到的 OpenBLAS 和 ScaLAPACK；其他机器应换成兼容的库路径，不要把 LP64 与 ILP64 库混在一起。
+不要混用不同 MPI 实现或不兼容的编译器运行时。更换编译器、MPI 或数学库后，使用新的 build 目录。上面显式指定 OpenBLAS 和 ScaLAPACK 的实际安装路径，不要把 LP64 与 ILP64 库混在一起。
 
 ### 2.3 数学库的源码编译
 
@@ -164,11 +168,11 @@ export PYTHON="$HOME/.venvs/libbse/bin/python"
 建立新的构建目录，指定源码位置：
 
 ```bash
-export DEP_WORK=$(mktemp -d /work/users/l/s/lsr/LibBSE/deps_tutorial.XXXXXX)
+export DEP_WORK=$(mktemp -d "$LIBBSE_WORKSPACE/deps_tutorial.XXXXXX")
 export DEP_PREFIX="$DEP_WORK/install"
-export OPENBLAS_SRC=/work/users/l/s/lsr/b_BSE/OpenBLAS
-export SCALAPACK_SRC=/work/users/l/s/lsr/b_BSE/scalapack
-export ELPA_SRC=/work/users/l/s/lsr/b_BSE/elpa-2024.05.001
+export OPENBLAS_SRC="$LIBBSE_WORKSPACE/deps/OpenBLAS"
+export SCALAPACK_SRC="$LIBBSE_WORKSPACE/deps/scalapack"
+export ELPA_SRC="$LIBBSE_WORKSPACE/deps/elpa-2024.05.001"
 mkdir -p "$DEP_PREFIX"
 test -f "$OPENBLAS_SRC/CMakeLists.txt"
 test -f "$SCALAPACK_SRC/CMakeLists.txt"
@@ -349,14 +353,14 @@ ctest --test-dir "$LIBBSE_SRC/build_tutorial" --output-on-failure
 从仓库 `examples` 创建一个新的运行目录；不要在已有验证结果中直接重新运行：
 
 ```bash
-export TUTORIAL_RUN_ROOT=$(mktemp -d /work/users/l/s/lsr/LibBSE/tutorial_runs.XXXXXX)
+export TUTORIAL_RUN_ROOT=$(mktemp -d "$LIBBSE_WORKSPACE/tutorial_runs.XXXXXX")
 for src in "$LIBBSE_SRC"/examples/0[1-8]_*; do
   cp -a "$src" "$TUTORIAL_RUN_ROOT/"
 done
 printf '%s\n' "$TUTORIAL_RUN_ROOT"
 ```
 
-保存打印出的路径。重新登录后需要重新设置 `LIBBSE_SRC`、`LIBBSE_EXE`、`LIBRPA_EXE` 和 `TUTORIAL_RUN_ROOT` 等变量。也可以从 `3_LibBSE_template` 复制相应目录；不要从含有旧输出的 `3_LibBSE_templatetest` 复制整套运行目录作为干净起点。
+保存打印出的路径。重新登录后需要重新设置 `LIBBSE_WORKSPACE`、`LIBBSE_SRC`、`LIBBSE_EXE`、`LIBRPA_EXE` 和 `TUTORIAL_RUN_ROOT` 等变量。不要从含有旧输出的历史测试目录复制整套运行目录作为干净起点。
 
 ### 4.2 可执行文件与并行设置
 
@@ -365,9 +369,9 @@ printf '%s\n' "$TUTORIAL_RUN_ROOT"
 ```bash
 export LIBBSE_EXE="$LIBBSE_SRC/build_tutorial/LibBSE"
 export LIBRPA_EXE="$LIBRPA_SRC/build_tutorial/chi0_main.exe"
-export ABACUS_EXE=/work/users/l/s/lsr/b_BSE/abacus-develop/build/abacus_std_para
-export AIMS_EXPORT_EXE=/work/users/l/s/lsr/FHIaims/FHIaims/build_stable_HDF/aims.x
-export AIMS_GW_EXE=/work/users/l/s/lsr/FHIaims/FHIaims/build_stable/aims.x
+export ABACUS_EXE="/path/to/abacus/build/abacus_std_para"
+export AIMS_EXPORT_EXE="/path/to/fhi-aims/build_export/aims.x"
+export AIMS_GW_EXE="/path/to/fhi-aims/build_gw/aims.x"
 export MPIEXEC=mpirun
 export PYTHON=${PYTHON:-python3}
 export OMP_NUM_THREADS=1
@@ -375,7 +379,7 @@ export AIMS_EXPORT_THREADS=4
 unset NPROCS
 ```
 
-每个例子的 `env.sh` 会保留已导出的程序路径，否则回落到本地旧构建 `build_external_libri/LibBSE` 和 `build_chi0/chi0_main.exe`。因此要测试刚编译的版本，必须设置上面的两个变量，或修改运行副本的 `env.sh`。
+每个例子的 `env.sh` 会保留已导出的程序路径，否则回落到本地旧构建 `build_external_libri/LibBSE` 和 `build_chi0/chi0_main.exe`。因此必须设置上面的程序路径变量，或修改运行副本的 `env.sh`。这些脚本仍含原集群的 module 和动态库路径；在其他环境运行时，应修改副本中的相应路径，并可设置 `LOAD_MODULES=0` 保留当前已配置的 module 环境。
 
 默认资源为 `inter` 分区、1 节点、4 MPI 进程、每进程 1 CPU、64 GB 内存、2 小时；按所在机器修改 `run.sh` 的 `#SBATCH` 行。不设置 `NPROCS` 时，脚本采用 `SLURM_NTASKS`，没有 Slurm 变量则用 4。FHI-aims 的导出阶段采用 1 个 MPI 进程和默认 4 个线程，在节点临时目录运行后复制回来；确保分配的 CPU 足够。
 
@@ -1208,10 +1212,11 @@ PY
 
 ### 7.4 使用已有完整验证脚本
 
-`3_LibBSE_templatetest/validate_results.py` 以脚本所在目录为根，默认读取该目录保存的作业记账记录；执行后会更新验证报告。下面命令针对历史测试目录，不会自动验证第 4 节新建的副本：
+`3_LibBSE_templatetest/validate_results.py` 以脚本所在目录为根，默认读取该目录保存的作业记账记录；执行后会更新验证报告。这些历史验证文件不随本仓库提供；若已单独取得，请将 `REFERENCE_RUN_ROOT` 设置为实际目录。下面命令针对历史测试目录，不会自动验证第 4 节新建的副本：
 
 ```bash
-cd /work/users/l/s/lsr/LibBSE/3_LibBSE_templatetest
+export REFERENCE_RUN_ROOT="/path/to/3_LibBSE_templatetest"
+cd "$REFERENCE_RUN_ROOT"
 python3 validate_results.py
 python3 compare_reference.py
 ```
@@ -1222,7 +1227,7 @@ python3 compare_reference.py
 
 | 现象 | 检查与处理 |
 | --- | --- |
-| `LIBRI_INCLUDE_DIR does not exist` | 本地实际路径是 `LibRI/LibRI/include`，不是默认的 `LibRI/include` |
+| `LIBRI_INCLUDE_DIR does not exist` | 将 `LIBRI_INC` 指向包含 `RI/` 的实际 include 根目录；某些源码布局可能是 `LibRI/LibRI/include` |
 | 找不到 ELPA 或反对称求解符号 | 检查安装前缀、头文件、库版本以及 ELPA 是否包含所需接口 |
 | 编译时变量 `I` 引发错误 | 检查独立 LibRPA 是否采用严格 C++17，换新 build 目录重新配置 |
 | 动态库 `not found` | 在与运行作业相同的 module 环境中检查 `ldd` 和 `LD_LIBRARY_PATH` |
