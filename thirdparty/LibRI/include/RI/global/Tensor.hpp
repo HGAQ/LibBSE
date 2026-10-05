@@ -13,6 +13,7 @@
 #include <vector>
 #include <functional>
 #include <cassert>
+#include <iostream>
 #include <limits>
 
 namespace RI
@@ -95,10 +96,18 @@ template<typename T1, typename T2>
 bool same_shape (const Tensor<T1> &t1, const Tensor<T2> &t2)
 {
 	if(t1.shape.size() != t2.shape.size())
+	{
+		std::cerr << "same_shape: ndim mismatch ("
+		          << t1.shape.size() << " vs " << t2.shape.size() << ")" << std::endl;
 		return false;
+	}
 	for(std::size_t ishape=0; ishape<t1.shape.size(); ++ishape)
 		if(t1.shape[ishape] != t2.shape[ishape])
+		{
+			std::cerr << "same_shape: dim[" << ishape << "] mismatch ("
+			          << t1.shape[ishape] << " vs " << t2.shape[ishape] << ")" << std::endl;
 			return false;
+		}
 	return true;
 }
 
@@ -183,6 +192,15 @@ Tensor<T> Tensor<T>::dagger() const
 }
 
 template<typename T>
+Tensor<T> Tensor<T>::conjugate() const
+{
+	Tensor<T> t(this->shape);
+	for (std::size_t i = 0; i < this->data->size(); ++i)
+        (*t.data)[i] = Global_Func::get_conj((*this->data)[i]);
+	return t;
+}
+
+template<typename T>
 Global_Func::To_Real_t<T> Tensor<T>::norm(const double p) const
 {
 	using T_res = Global_Func::To_Real_t<T>;
@@ -256,6 +274,45 @@ template<typename T, std::size_t N0, std::size_t N1, std::size_t N2, std::size_t
 Tensor<T> to_Tensor(const std::array<std::array<std::array<std::array<T,N3>,N2>,N1>,N0> &a)
 {
 	Tensor<T> t({N0,N1,N2,N3});
+	for(std::size_t i0=0; i0<N0; ++i0)
+		for(std::size_t i1=0; i1<N1; ++i1)
+			for(std::size_t i2=0; i2<N2; ++i2)
+				for(std::size_t i3=0; i3<N3; ++i3)
+					t(i0,i1,i2,i3) = a[i0][i1][i2][i3];
+	return t;
+}
+
+template<typename Tout, typename Tin, std::size_t N0>
+Tensor<Tout> to_Tensor(const std::array<Tin,N0> &a)
+{
+	Tensor<Tout> t({N0});
+	for(std::size_t i0=0; i0<N0; ++i0)
+		t(i0) = a[i0];
+	return t;
+}
+template<typename Tout, typename Tin, std::size_t N0, std::size_t N1>
+Tensor<Tout> to_Tensor(const std::array<std::array<Tin,N1>,N0> &a)
+{
+	Tensor<Tout> t({N0,N1});
+	for(std::size_t i0=0; i0<N0; ++i0)
+		for(std::size_t i1=0; i1<N1; ++i1)
+			t(i0,i1) = a[i0][i1];
+	return t;
+}
+template<typename Tout, typename Tin, std::size_t N0, std::size_t N1, std::size_t N2>
+Tensor<Tout> to_Tensor(const std::array<std::array<std::array<Tin,N2>,N1>,N0> &a)
+{
+	Tensor<Tout> t({N0,N1,N2});
+	for(std::size_t i0=0; i0<N0; ++i0)
+		for(std::size_t i1=0; i1<N1; ++i1)
+			for(std::size_t i2=0; i2<N2; ++i2)
+				t(i0,i1,i2) = a[i0][i1][i2];
+	return t;
+}
+template<typename Tout, typename Tin, std::size_t N0, std::size_t N1, std::size_t N2, std::size_t N3>
+Tensor<Tout> to_Tensor(const std::array<std::array<std::array<std::array<Tin,N3>,N2>,N1>,N0> &a)
+{
+	Tensor<Tout> t({N0,N1,N2,N3});
 	for(std::size_t i0=0; i0<N0; ++i0)
 		for(std::size_t i1=0; i1<N1; ++i1)
 			for(std::size_t i2=0; i2<N2; ++i2)

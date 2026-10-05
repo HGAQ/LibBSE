@@ -12,7 +12,7 @@ set(CEREAL_INCLUDE_DIR
     CACHE PATH "Path to the cereal include directory")
 set(LIBRPA_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../LibRPA/include"
     CACHE PATH "Path to the LibRPA include directory")
-set(LIBRI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../LibRI/include"
+set(LIBRI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/LibRI/include"
     CACHE PATH "Path to the LibRI include directory")
 set(LIBCOMM_INCLUDE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/../LibRPA/thirdparty/LibComm/include"
@@ -75,7 +75,7 @@ target_include_directories(libbse_core
 )
 
 find_package(OpenMP REQUIRED COMPONENTS CXX)
-target_link_libraries(libbse_core PUBLIC rpa_lib OpenMP::OpenMP_CXX)
+target_link_libraries(libbse_core PUBLIC librpa_file_reader OpenMP::OpenMP_CXX)
 
 add_executable(LibBSE driver/main.cpp)
 target_link_libraries(LibBSE PRIVATE libbse_core)

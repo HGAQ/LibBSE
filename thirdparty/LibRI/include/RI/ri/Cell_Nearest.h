@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "../global/Tensor.h"
 #include <array>
 #include <map>
 
@@ -25,8 +26,14 @@ public:
 
 	TC get_cell_nearest_discrete(const TA &Ax, const TA &Ay, const TC &cell) const;
 
+	/// @brief get nearest cell through brute-force search
+	/// @details if more than one cell has the min distance, choose the direction as smaller abs(R-R_near).z, then .y, then .x
+	TC cell_nearest_direction(const TA Ax, const TA Ay, const TC& cell,	double& dist_min) const;
+
 public:		//private:
 	TC period;
+	std::map<TA,Tensor<Tpos>> atoms_pos;
+	Tensor<Tpos> latvec;
 	std::map<TA,std::map<TA,std::array<Tpos,Ndim>>> cells_nearest_continuous;
 };
 

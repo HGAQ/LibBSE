@@ -24,7 +24,7 @@ documented in [`docs/fhi_aims_io.md`](docs/fhi_aims_io.md).
 - MPI, OpenMP, BLAS, LAPACK, and ScaLAPACK
 - Python 3 with NumPy and h5py for the FHI-aims momentum converter
 - an ELPA installation with the skew-symmetric eigensolver enabled
-- sibling source checkouts of LibRPA and external LibRI by default
+- a sibling LibRPA source checkout; LibRI defaults to `thirdparty/LibRI`
 
 The dependency header paths are configured consistently through
 `CEREAL_INCLUDE_DIR`, `LIBRPA_INCLUDE_DIR`, `LIBRI_INCLUDE_DIR`, and
@@ -41,7 +41,7 @@ cmake -S . -B build \
   -DEXTERNAL_ELPA_DIR=/work/users/l/s/lsr/b_BSE/elpa-2024.05.001/build/install \
   -DCEREAL_INCLUDE_DIR=../LibRPA/thirdparty/cereal-1.3.0/include \
   -DLIBRPA_INCLUDE_DIR=../LibRPA/include \
-  -DLIBRI_INCLUDE_DIR=/work/users/l/s/lsr/LibBSE/1_LibBSE/LibRI/LibRI/include \
+  -DLIBRI_INCLUDE_DIR=thirdparty/LibRI/include \
   -DLIBCOMM_INCLUDE_DIR=../LibRPA/thirdparty/LibComm/include
 cmake --build build -j 8
 ctest --test-dir build --output-on-failure

@@ -23,7 +23,7 @@ LibBSE 使用 FHI-aims、ABACUS 或 LibRPA 的输出求解周期性 Bethe--Salpe
 - MPI、OpenMP、BLAS、LAPACK 和 ScaLAPACK
 - FHI-aims 动量转换器需要 Python 3、NumPy 和 h5py
 - 启用了反对称本征值求解器的 ELPA 安装
-- 默认使用同级目录中的 LibRPA 和外部 LibRI 源码
+- 默认使用同级目录中的 LibRPA 源码和 `thirdparty/LibRI`
 
 依赖库头文件路径统一通过 `CEREAL_INCLUDE_DIR`、`LIBRPA_INCLUDE_DIR`、
 `LIBRI_INCLUDE_DIR` 和 `LIBCOMM_INCLUDE_DIR` 配置。因为 LibBSE 会把
@@ -40,7 +40,7 @@ cmake -S . -B build \
   -DEXTERNAL_ELPA_DIR=/work/users/l/s/lsr/b_BSE/elpa-2024.05.001/build/install \
   -DCEREAL_INCLUDE_DIR=../LibRPA/thirdparty/cereal-1.3.0/include \
   -DLIBRPA_INCLUDE_DIR=../LibRPA/include \
-  -DLIBRI_INCLUDE_DIR=/work/users/l/s/lsr/LibBSE/1_LibBSE/LibRI/LibRI/include \
+  -DLIBRI_INCLUDE_DIR=thirdparty/LibRI/include \
   -DLIBCOMM_INCLUDE_DIR=../LibRPA/thirdparty/LibComm/include
 cmake --build build -j 8
 ctest --test-dir build --output-on-failure

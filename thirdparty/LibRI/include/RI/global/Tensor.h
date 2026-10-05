@@ -45,6 +45,7 @@ public:
 
 	Tensor transpose() const;
 	Tensor dagger() const;
+	Tensor conjugate() const;
 
 	// ||d||_p = (|d_1|^p+|d_2|^p+...)^{1/p}
 	// if(p==std::numeric_limits<double>::max())    ||d||_max = max_i |d_i|
@@ -54,8 +55,8 @@ public:
 
 	bool empty() const { return shape.empty(); }
 
-	Tensor & operator += (const Tensor &);
-	Tensor & operator -= (const Tensor &);
+	Tensor & operator += (const Tensor &t);
+	Tensor & operator -= (const Tensor &t);
 	Tensor operator-() const;
 
 	template <class Archive> void serialize( Archive & ar ){ ar(shape, data); }		// for cereal
@@ -93,6 +94,15 @@ template<typename T, std::size_t N0, std::size_t N1, std::size_t N2>
 extern Tensor<T> to_Tensor(const std::array<std::array<std::array<T,N2>,N1>,N0> &a);
 template<typename T, std::size_t N0, std::size_t N1, std::size_t N2, std::size_t N3>
 extern Tensor<T> to_Tensor(const std::array<std::array<std::array<std::array<T,N3>,N2>,N1>,N0> &a);
+
+template<typename Tout, typename Tin, std::size_t N0>
+extern Tensor<Tout> to_Tensor(const std::array<Tin,N0> &a);
+template<typename Tout, typename Tin, std::size_t N0, std::size_t N1>
+extern Tensor<Tout> to_Tensor(const std::array<std::array<Tin,N1>,N0> &a);
+template<typename Tout, typename Tin, std::size_t N0, std::size_t N1, std::size_t N2>
+extern Tensor<Tout> to_Tensor(const std::array<std::array<std::array<Tin,N2>,N1>,N0> &a);
+template<typename Tout, typename Tin, std::size_t N0, std::size_t N1, std::size_t N2, std::size_t N3>
+extern Tensor<Tout> to_Tensor(const std::array<std::array<std::array<std::array<Tin,N3>,N2>,N1>,N0> &a);
 
 template<typename T, std::size_t N0>
 extern std::array<T,N0> to_array(const Tensor<T> &t);

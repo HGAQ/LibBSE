@@ -1,6 +1,6 @@
 // ===================
-//  Author: Peize Lin
-//  date: 2022.07.15
+//  Author: maki49
+//  date: 2026.07.10
 // ===================
 
 #pragma once
@@ -8,13 +8,17 @@
 #include <vector>
 #include <array>
 #include <utility>
+#include <map>
 #include <mpi.h>
 
 namespace RI
 {
 
-namespace Distribute_Equally
+namespace Distribute_Equally_Weighted
 {
+	// atoms_weight[atom] 为该原子的block大小（原子轨道数）。各维按 sum(weight) 而非原子个数均分。
+	// atoms_weight 为空时退化为按个数均分，与不加权版本逐字节一致。
+
 	// num_index 维张量，第0维为atoms，剩余维为{atom,cell}。
 	// 返回值为每维上本进程被分配到的值列表，first为第0维，second[i-1]为第i维。
 	// 当 任务数<进程数 时，部分进程会被分配到重复任务。if(!flag_task_repeatable)，重复进程只保留一个，其他进程将任务删空。
@@ -28,7 +32,8 @@ namespace Distribute_Equally
 		const std::vector<TA> &atoms,
 		const std::array<Tcell,Ndim> &period,
 		const std::size_t num_index,
-		const bool flag_task_repeatable);
+		const bool flag_task_repeatable,
+		const std::map<TA,std::size_t> &atoms_weight = {});
 
 	// 第0维按照atoms、剩余维按照{atom,period}，尽可能均分
 	template<typename TA, typename Tcell, std::size_t Ndim>
@@ -39,7 +44,8 @@ namespace Distribute_Equally
 		const std::vector<TA> &atoms,
 		const std::array<Tcell,Ndim> &period,
 		const std::size_t num_index,
-		const bool flag_task_repeatable);
+		const bool flag_task_repeatable,
+		const std::map<TA,std::size_t> &atoms_weight = {});
 
 
 
@@ -55,30 +61,10 @@ namespace Distribute_Equally
 		const std::vector<TA> &atoms,
 		const std::array<Tcell,Ndim> &period,
 		const std::size_t num_index,
-		const bool flag_task_repeatable);
-
-	template<typename Tindex>
-	extern void distribute_atom_and_k_pair(
-		const MPI_Comm &mpi_comm,
-		const std::size_t nat,
-		const std::size_t nk,
-		std::vector<Tindex> &list_I,
-		std::vector<Tindex> &list_J,
-		std::vector<Tindex> &list_k1_index,
-		std::vector<Tindex> &list_k2_index,
-		const bool flag_task_repeatable);
-
-	template<typename Tindex>
-	extern void distribute_atom_pair_and_k(
-		const MPI_Comm &mpi_comm,
-		const std::size_t nat,
-		const std::size_t nk,
-		std::vector<Tindex> &list_I,
-		std::vector<Tindex> &list_J,
-		std::vector<Tindex> &list_k_index,
-		const bool flag_task_repeatable);
+		const bool flag_task_repeatable,
+		const std::map<TA,std::size_t> &atoms_weight = {});
 }
 
 }
 
-#include "Distribute_Equally.hpp"
+#include "Distribute_Equally_Weighted.hpp"
