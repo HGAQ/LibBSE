@@ -99,7 +99,19 @@ ABACUS 或 FHI-aims 产生 KS 波函数、RI 系数、Coulomb 和速度/动量�
 | Python、NumPy、h5py | 数据转换与数值检查；h5py 读取动量 HDF5 | 按 2.2 节导入检查或安装到虚拟环境 |
 | ABACUS / FHI-aims | 产生 KS、RI、Coulomb、QP 等物理输入 | 第 4 节指定已有兼容版本；仅运行对应路线时需要 |
 
-需准备相互兼容的 LibRPA、LibRI、LibComm、cereal 和 GreenX 源码。这些组件不应仅凭同名用任意版本替换，尤其当前 LibBSE 需要 LibRPA 的 `include/librpa_file_reader.hpp`、`librpa::FileReaderOptions` 和 `librpa::read_dataset_from_files`，以及 LibRI 的 `RI/physics/LR.h`。本仓库尚未固定兼容的 LibRPA/LibRI 发布版本或提交号；请向维护者获取匹配的源码，并记录各仓库的提交号以便复现。迁移机器时先携带这一组兼容源码及模板，再替换编译器、MPI、数学库和路径。
+**本仓库尚未固定兼容的 LibRPA/LibRI 发布版本或提交号；请向维护者获取匹配的源码。** 当前 LibBSE 接口依赖特定开发版本的 LibRPA，相关功能仍在开发中，尚无稳定的依赖兼容性保证。
+
+需准备相互兼容的 LibRPA、LibRI、LibComm、cereal 和 GreenX 源码。这些组件不应仅凭同名用任意版本替换，尤其当前 LibBSE 需要 LibRPA 的 `include/librpa_file_reader.hpp`、`librpa::FileReaderOptions` 和 `librpa::read_dataset_from_files`，包括 `distribute_lri` 和 `read_full_coulomb` 选项，以及 LibRI 的 `RI/physics/LR.h`。LibBSE 和 LibRPA 共用本仓库的 `thirdparty/LibRI`。
+
+[HGAQ/LibRPA_LibBSE](https://github.com/HGAQ/LibRPA_LibBSE/tree/aesm-outputchi-20261001) 的 `aesm-outputchi-20261001` 分支、提交 `7551e28df26175167eb2415e5dbbaf5bec7d1ce6` 仅记录一次已测试的开发快照，不代表固定的稳定依赖，也不保证该分支后续更新仍然兼容。先向维护者确认适用于当前 LibBSE 的版本，再在工作目录中获取源码：
+
+```bash
+git clone --branch aesm-outputchi-20261001 https://github.com/HGAQ/LibRPA_LibBSE.git LibRPA
+# 将 MAINTAINER_CONFIRMED_COMMIT 替换为维护者确认的提交号。
+git -C LibRPA checkout MAINTAINER_CONFIRMED_COMMIT
+```
+
+迁移机器时先携带这一组兼容源码及模板，再替换编译器、MPI、数学库和路径。
 
 - CMake ≥ 3.16、支持 C++17 的编译器、Fortran 编译器、MPI 和 OpenMP。
 - BLAS、LAPACK、ScaLAPACK；本地参考配置使用 LP64 数学库。

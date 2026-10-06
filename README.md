@@ -26,6 +26,27 @@ documented in [`docs/fhi_aims_io.md`](docs/fhi_aims_io.md).
 - an ELPA installation with the skew-symmetric eigensolver enabled
 - a sibling LibRPA source checkout; LibRI defaults to `thirdparty/LibRI`
 
+**Dependency compatibility is still under development.** This repository has
+not yet pinned compatible LibRPA/LibRI releases or commits; please obtain
+matching source code from the maintainers before building. The current LibBSE
+interfaces depend on a particular development version of LibRPA and may change.
+
+The [HGAQ/LibRPA_LibBSE fork](https://github.com/HGAQ/LibRPA_LibBSE/tree/aesm-outputchi-20261001),
+branch `aesm-outputchi-20261001` (commit `7551e28df26175167eb2415e5dbbaf5bec7d1ce6`),
+records a tested development snapshot, not a stable dependency requirement or
+a guarantee of compatibility with future branch updates. After confirming the
+appropriate revision with the maintainers, clone it as `LibRPA` from the
+workspace containing LibBSE and check out that revision:
+
+```sh
+git clone --branch aesm-outputchi-20261001 https://github.com/HGAQ/LibRPA_LibBSE.git LibRPA
+# Replace MAINTAINER_CONFIRMED_COMMIT with the revision supplied by the maintainers.
+git -C LibRPA checkout MAINTAINER_CONFIRMED_COMMIT
+```
+
+This fork supplies the reader options needed by LibBSE; the upstream LibRPA
+checkout is not interchangeable. Both projects use LibBSE's `thirdparty/LibRI`.
+
 The dependency header paths are configured consistently through
 `CEREAL_INCLUDE_DIR`, `LIBRPA_INCLUDE_DIR`, `LIBRI_INCLUDE_DIR`, and
 `LIBCOMM_INCLUDE_DIR`. `LIBRPA_INCLUDE_DIR` must be the `include` directory of

@@ -25,6 +25,17 @@ LibBSE 使用 FHI-aims、ABACUS 或 LibRPA 的输出求解周期性 Bethe--Salpe
 - 启用了反对称本征值求解器的 ELPA 安装
 - 默认使用同级目录中的 LibRPA 源码和 `thirdparty/LibRI`
 
+LibRPA 使用 [HGAQ/LibRPA_LibBSE 分支](https://github.com/HGAQ/LibRPA_LibBSE/tree/aesm-outputchi-20261001)
+`aesm-outputchi-20261001`（提交 `7551e28df26175167eb2415e5dbbaf5bec7d1ce6`）。
+在包含 LibBSE 的工作目录中将其克隆为 `LibRPA`：
+
+```sh
+git clone --branch aesm-outputchi-20261001 https://github.com/HGAQ/LibRPA_LibBSE.git LibRPA
+```
+
+该分支提供 LibBSE 所需的文件读取选项，不能直接替换为上游 LibRPA。
+两个项目共用 LibBSE 的 `thirdparty/LibRI`。
+
 依赖库头文件路径统一通过 `CEREAL_INCLUDE_DIR`、`LIBRPA_INCLUDE_DIR`、
 `LIBRI_INCLUDE_DIR` 和 `LIBCOMM_INCLUDE_DIR` 配置。因为 LibBSE 会把
 LibRPA 的 BSE 文件读取 API 作为子项目编译，`LIBRPA_INCLUDE_DIR` 必须指向
