@@ -1,3 +1,4 @@
+#include "utils/memory_views.h"
 #include "librpa_api.h"
 #include "io/fhi_aims_adapter.h"
 #include <../src/core/epsilon.h>
@@ -56,11 +57,14 @@ libbse::TensorMap<libbse::Complex> build_bare_coulomb(
     auto real_space = librpa_int::FT_Vq(dataset.comm_h, dataset.basis_aux,
                                         dataset.symmetry_context, dataset.vq_cut,
                                         dataset.pbc, true, false);
+    auto real_space_memory = libbse::watch_memory("Coulomb.FT_input", real_space);
     // Chi0 screening still needs V(q) after constructing the Hartree kernel.
     if (libbse::PARAM.inp.screened_format.find("chi0") == std::string::npos)
+        libbse::MemoryTracker::instance().checkpoint();
         dataset.vq_cut.clear();
 
     libbse::TensorMap<libbse::Complex> result;
+    auto result_memory = libbse::watch_memory("Coulomb.real_space_output", result);
     for (const auto &[iat, atom_blocks] : real_space)
     {
         for (const auto &[jat, r_blocks] : atom_blocks)
@@ -92,6 +96,7 @@ libbse::TensorMap<libbse::Complex> transform_screened_q_to_r(
         dataset.comm_h, dataset.basis_aux, dataset.symmetry_context, wq,
         dataset.tfg, pbc, pbc.Rlist, true, "", false);
     libbse::TensorMap<libbse::Complex> result;
+    auto result_memory = libbse::watch_memory("Coulomb.real_space_output", result);
     for (const auto &[iat, js] : wr)
         for (const auto &[jat, rs] : js)
             for (const auto &[r, matrix] : rs)
@@ -106,8 +111,11 @@ librpa_int::ComplexMatrix inverse(const librpa_int::ComplexMatrix &matrix)
 {
     if (matrix.nr != matrix.nc) throw std::invalid_argument("cannot invert a nonsquare matrix");
     librpa_int::ComplexMatrix result(matrix);
+    auto result_memory = libbse::watch_memory("inverse.result", result);
     std::vector<int> pivots(static_cast<std::size_t>(matrix.nr));
+    auto pivots_memory = libbse::watch_memory("librpa_api.pivots", pivots);
     std::vector<libbse::Complex> work(static_cast<std::size_t>(matrix.nr) * matrix.nr);
+    auto work_memory = libbse::watch_memory("librpa_api.work", work);
     int status = 0;
     librpa_int::LapackConnector::zgetrf(matrix.nr, matrix.nc, result,
                                         matrix.nr, pivots.data(), &status);

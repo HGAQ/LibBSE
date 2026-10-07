@@ -9,7 +9,7 @@
 namespace libbse
 {
 
-struct MatrixCheckResult
+struct MatrixCheckSolution
 {
     bool passed = false;
     double difference_norm = 0.0;
@@ -17,11 +17,11 @@ struct MatrixCheckResult
     double relative_error = 0.0;
 };
 
-MatrixCheckResult check_hermitian(
+MatrixCheckSolution check_hermitian(
     const std::vector<Complex> &matrix,
     const librpa_int::ArrayDesc &descriptor, double threshold);
 
-MatrixCheckResult check_symmetric(
+MatrixCheckSolution check_symmetric(
     const std::vector<Complex> &matrix,
     const librpa_int::ArrayDesc &descriptor, double threshold);
 

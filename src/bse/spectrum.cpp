@@ -1,3 +1,4 @@
+#include "utils/memory_views.h"
 #include "spectrum.h"
 #include "interface/librpa_api.h"
 
@@ -287,6 +288,7 @@ std::vector<OscillatorStrength> calculate_oscillator_strengths(
         throw std::invalid_argument(
             "invalid excitation energies, dipoles, or k-point count");
     std::vector<OscillatorStrength> result(energies_ry.size());
+    auto result_memory = libbse::watch_memory("spectrum.result", result);
     for (std::size_t state = 0; state != energies_ry.size(); ++state)
     {
         if (!std::isfinite(energies_ry[state]) || energies_ry[state] < 0.0)
@@ -337,6 +339,7 @@ std::vector<SpectrumPoint> broaden_oscillator_spectrum(
     const std::size_t npoints
         = static_cast<std::size_t>(std::floor(raw_points + 1.0e-12)) + 1;
     std::vector<SpectrumPoint> result(npoints);
+    auto result_memory = libbse::watch_memory("spectrum.result", result);
     for (std::size_t index = 0; index != npoints; ++index)
     {
         auto &point = result[index];
@@ -385,11 +388,13 @@ std::vector<std::array<Complex, 3>> velocity_gauge_transition_dipoles_mpi(
 
     const int nstates = amplitudes_x.nstates;
     std::vector<std::array<Complex, 3>> local(static_cast<std::size_t>(nstates));
+    auto local_memory = libbse::watch_memory("spectrum.local", local);
     for (int state = 0; state < nstates; ++state)
         local[state] = distributed_transition_dipole(
             state, options, velocity_mo, amplitudes_x, amplitudes_y);
 
     std::vector<std::array<Complex, 3>> result;
+    auto result_memory = libbse::watch_memory("spectrum.result", result);
     if (rank == 0) result.resize(static_cast<std::size_t>(nstates));
     MPI_Reduce(local.data(), rank == 0 ? result.data() : nullptr,
                3 * nstates, MPI_C_DOUBLE_COMPLEX, MPI_SUM, 0, comm);
@@ -407,6 +412,7 @@ std::vector<std::array<Complex, 3>> tda_transition_momenta_mpi(
     MPI_Comm_rank(comm, &rank);
     const int nstates = amplitudes.nstates;
     std::vector<std::array<Complex, 3>> local(static_cast<std::size_t>(nstates));
+    auto local_memory = libbse::watch_memory("spectrum.local", local);
 #pragma omp parallel for schedule(static)
     for (int state = 0; state < nstates; ++state)
         for (int pair = 0; pair < amplitudes.local_pairs; ++pair)
@@ -414,6 +420,7 @@ std::vector<std::array<Complex, 3>> tda_transition_momenta_mpi(
                 local[state][axis] += velocity_mo.values[velocity_index(
                     axis, pair, velocity_mo.local_pairs)] * amplitudes(state, pair);
     std::vector<std::array<Complex, 3>> result;
+    auto result_memory = libbse::watch_memory("spectrum.result", result);
     if (rank == 0) result.resize(static_cast<std::size_t>(nstates));
     // FUNNELED: all MPI calls are outside the OpenMP parallel region.
     MPI_Reduce(local.data(), rank == 0 ? result.data() : nullptr,
@@ -451,6 +458,7 @@ FineVelocityMo prepare_fine_velocity_mo(
 
     const PairPartition partition = pair_partition(dimension, mpi_size, rank);
     FineVelocityMo result;
+    auto result_memory = watch_memory("spectrum.result", result);
     result.nk = fine_nk;
     result.nbands = options.nocc + options.nvirt;
     result.first_pair = partition.first;
@@ -522,6 +530,7 @@ FineVelocityMo prepare_fine_velocity_mo(
 
     std::vector<std::array<librpa_int::ComplexMatrix, 3>> velocity_ao_k(
         static_cast<std::size_t>(coarse_nk));
+    auto velocity_ao_k_memory = libbse::watch_memory("spectrum.velocity_ao_k", velocity_ao_k);
     for (int ik = 0; ik < coarse_nk; ++ik)
     {
         const auto *wavefunctions = dataset->mf.find_wfc(0, 0, ik);
@@ -545,6 +554,7 @@ FineVelocityMo prepare_fine_velocity_mo(
 
     std::vector<std::array<librpa_int::ComplexMatrix, 3>> velocity_ao_r(
         dataset->pbc.Rlist.size());
+    auto velocity_ao_r_memory = libbse::watch_memory("spectrum.velocity_ao_r", velocity_ao_r);
     for (std::size_t ir = 0; ir < dataset->pbc.Rlist.size(); ++ir)
     {
         for (int direction = 0; direction < 3; ++direction)
@@ -559,6 +569,7 @@ FineVelocityMo prepare_fine_velocity_mo(
                                              velocity_ao_r[ir][direction]);
         }
     }
+    libbse::MemoryTracker::instance().checkpoint();
     velocity_ao_k.clear();
 
     // The inverse FFT returns one representative of each coarse-grid BvK
@@ -574,6 +585,7 @@ FineVelocityMo prepare_fine_velocity_mo(
         dataset->pbc.Rlist.size(),
         std::vector<std::vector<Cell>>(
             dataset->atoms.size(), std::vector<Cell>(dataset->atoms.size())));
+    auto nearest_cells_memory = libbse::watch_memory("spectrum.nearest_cells", nearest_cells);
     for (std::size_t ir = 0; ir < dataset->pbc.Rlist.size(); ++ir)
     {
         const Cell canonical{dataset->pbc.Rlist[ir].x,
@@ -589,10 +601,12 @@ FineVelocityMo prepare_fine_velocity_mo(
     }
 
     std::vector<int> local_sources(static_cast<std::size_t>(fine_nk), mpi_size);
+    auto local_sources_memory = libbse::watch_memory("spectrum.local_sources", local_sources);
     for (int ik = 0; ik < fine_nk; ++ik)
         if (dataset->mf_band.find_wfc(0, 0, ik) != nullptr)
             local_sources[ik] = rank;
     std::vector<int> sources(static_cast<std::size_t>(fine_nk), mpi_size);
+    auto sources_memory = libbse::watch_memory("spectrum.sources", sources);
     MPI_Allreduce(local_sources.data(), sources.data(), fine_nk, MPI_INT,
                   MPI_MIN, dataset->comm_h.comm);
     for (int ik = 0; ik < fine_nk; ++ik)
@@ -601,6 +615,7 @@ FineVelocityMo prepare_fine_velocity_mo(
                 "fine-grid KS wavefunction is absent on every MPI rank");
 
     std::vector<int> send_pair_counts(static_cast<std::size_t>(mpi_size), 0);
+    auto send_pair_counts_memory = libbse::watch_memory("spectrum.send_pair_counts", send_pair_counts);
     for (int ik = 0; ik < fine_nk; ++ik)
         if (sources[ik] == rank)
             for (int pair_in_k = 0; pair_in_k < pair_dimension; ++pair_in_k)
@@ -609,12 +624,15 @@ FineVelocityMo prepare_fine_velocity_mo(
                 ++send_pair_counts[pair_owner(pair, dimension, mpi_size)];
             }
     std::vector<int> receive_pair_counts(static_cast<std::size_t>(mpi_size), 0);
+    auto receive_pair_counts_memory = libbse::watch_memory("spectrum.receive_pair_counts", receive_pair_counts);
     MPI_Alltoall(send_pair_counts.data(), 1, MPI_INT,
                  receive_pair_counts.data(), 1, MPI_INT,
                  dataset->comm_h.comm);
 
     std::vector<int> send_pair_offsets(static_cast<std::size_t>(mpi_size), 0);
+    auto send_pair_offsets_memory = libbse::watch_memory("spectrum.send_pair_offsets", send_pair_offsets);
     std::vector<int> receive_pair_offsets(static_cast<std::size_t>(mpi_size), 0);
+    auto receive_pair_offsets_memory = libbse::watch_memory("spectrum.receive_pair_offsets", receive_pair_offsets);
     for (int process = 1; process < mpi_size; ++process)
     {
         send_pair_offsets[process] = send_pair_offsets[process - 1]
@@ -635,8 +653,11 @@ FineVelocityMo prepare_fine_velocity_mo(
             "distributed velocity_mo exchange exceeds the MPI count limit");
 
     std::vector<int> send_pairs(static_cast<std::size_t>(total_send));
+    auto send_pairs_memory = libbse::watch_memory("spectrum.send_pairs", send_pairs);
     std::vector<Complex> send_values(static_cast<std::size_t>(3) * total_send);
+    auto send_values_memory = libbse::watch_memory("spectrum.send_values", send_values);
     std::vector<int> send_cursor = send_pair_offsets;
+    auto send_cursor_memory = libbse::watch_memory("spectrum.send_cursor", send_cursor);
     for (int ik = 0; ik < fine_nk; ++ik)
     {
         if (sources[ik] != rank) continue;
@@ -646,6 +667,7 @@ FineVelocityMo prepare_fine_velocity_mo(
             throw std::runtime_error("fine-grid KS wavefunction is incomplete");
 
         std::vector<int> pair_slots(static_cast<std::size_t>(pair_dimension));
+        auto pair_slots_memory = libbse::watch_memory("spectrum.pair_slots", pair_slots);
         for (int pair_in_k = 0; pair_in_k < pair_dimension; ++pair_in_k)
         {
             const int pair = ik * pair_dimension + pair_in_k;
@@ -689,17 +711,23 @@ FineVelocityMo prepare_fine_velocity_mo(
                 "inconsistent distributed velocity_mo packing");
 
     std::vector<int> receive_pairs(static_cast<std::size_t>(total_receive));
+    auto receive_pairs_memory = libbse::watch_memory("spectrum.receive_pairs", receive_pairs);
     std::vector<Complex> receive_values(
         static_cast<std::size_t>(3) * total_receive);
+    auto receive_values_memory = libbse::watch_memory("spectrum.receive_values", receive_values);
     MPI_Alltoallv(send_pairs.data(), send_pair_counts.data(),
                   send_pair_offsets.data(), MPI_INT,
                   receive_pairs.data(), receive_pair_counts.data(),
                   receive_pair_offsets.data(), MPI_INT,
                   dataset->comm_h.comm);
     std::vector<int> send_value_counts(static_cast<std::size_t>(mpi_size));
+    auto send_value_counts_memory = libbse::watch_memory("spectrum.send_value_counts", send_value_counts);
     std::vector<int> receive_value_counts(static_cast<std::size_t>(mpi_size));
+    auto receive_value_counts_memory = libbse::watch_memory("spectrum.receive_value_counts", receive_value_counts);
     std::vector<int> send_value_offsets(static_cast<std::size_t>(mpi_size));
+    auto send_value_offsets_memory = libbse::watch_memory("spectrum.send_value_offsets", send_value_offsets);
     std::vector<int> receive_value_offsets(static_cast<std::size_t>(mpi_size));
+    auto receive_value_offsets_memory = libbse::watch_memory("spectrum.receive_value_offsets", receive_value_offsets);
     for (int process = 0; process < mpi_size; ++process)
     {
         send_value_counts[process] = 3 * send_pair_counts[process];
@@ -715,6 +743,7 @@ FineVelocityMo prepare_fine_velocity_mo(
 
     std::vector<unsigned char> assigned(
         static_cast<std::size_t>(partition.count), 0);
+    auto assigned_memory = libbse::watch_memory("spectrum.assigned", assigned);
     for (int received = 0; received < total_receive; ++received)
     {
         const int local_pair = receive_pairs[received] - partition.first;
@@ -732,55 +761,44 @@ FineVelocityMo prepare_fine_velocity_mo(
     return result;
 }
 
-void write_velocity_gauge_outputs(
-    const InputParameters &options,
-    const librpa_int::Dataset &dataset,
-    const FineVelocityMo &velocity,
-    const std::vector<double> &energies_ry,
-    const DistributedAmplitudes &amplitudes_x,
-    const DistributedAmplitudes *amplitudes_y,
-    const std::string &spin_type,
-    const std::string &solution_type)
+template<class Visit>
+void write_velocity_gauge_outputs_impl(
+    const InputParameters &options, const librpa_int::Dataset &dataset,
+    const FineVelocityMo &velocity, const std::vector<double> &energies_ry,
+    int supplied_states, bool has_y, const std::string &spin_type,
+    const std::string &solution_type, const Visit &visit)
 {
-    int rank = 0;
-    int mpi_size = 1;
+    int rank = 0, mpi_size = 1;
     MPI_Comm_rank(dataset.comm_h.comm, &rank);
     MPI_Comm_size(dataset.comm_h.comm, &mpi_size);
     int nstates = rank == 0 ? static_cast<int>(energies_ry.size()) : 0;
     MPI_Bcast(&nstates, 1, MPI_INT, 0, dataset.comm_h.comm);
+    if (supplied_states != nstates || nstates > std::numeric_limits<int>::max()/3)
+        throw std::invalid_argument("invalid optical state count");
     const int pair_dimension = options.nocc * options.nvirt;
     const int dimension = velocity.nk * pair_dimension;
-    if (amplitudes_x.dimension != dimension
-        || amplitudes_x.nstates != nstates
-        || (amplitudes_y != nullptr
-            && (amplitudes_y->dimension != dimension
-                || amplitudes_y->nstates != nstates)))
-        throw std::invalid_argument(
-            "excitation energies and distributed amplitudes do not match");
-
     std::vector<double> all_energies = energies_ry;
+    auto all_energies_memory = libbse::watch_memory("spectrum.all_energies", all_energies);
     broadcast_vector(all_energies, MPI_DOUBLE, nstates, dataset.comm_h.comm);
 
-    auto dipoles = velocity_gauge_transition_dipoles_mpi(
-        dataset.comm_h.comm, options, velocity,
-        amplitudes_x, amplitudes_y);
-    const auto momenta = amplitudes_y == nullptr
-        ? tda_transition_momenta_mpi(dataset.comm_h.comm, options, velocity, amplitudes_x)
-        : std::vector<std::array<Complex, 3>>{};
+    std::vector<std::array<Complex,3>> local_dipoles(nstates), local_momenta(nstates);
+    auto local_dipoles_memory = libbse::watch_memory("spectrum.local_dipoles", local_dipoles);
+    auto local_momenta_memory = libbse::watch_memory("spectrum.local_momenta", local_momenta);
+    std::vector<std::array<Complex,3>> dipoles(nstates), momenta(nstates);
+    auto dipoles_memory = libbse::watch_memory("spectrum.dipoles", dipoles);
+    auto momenta_memory = libbse::watch_memory("spectrum.momenta", momenta);
     std::vector<double> local_weight1(static_cast<std::size_t>(velocity.nk), 0.0);
+    auto local_weight1_memory = libbse::watch_memory("spectrum.local_weight1", local_weight1);
     std::vector<double> local_weight2(static_cast<std::size_t>(velocity.nk), 0.0);
+    auto local_weight2_memory = libbse::watch_memory("spectrum.local_weight2", local_weight2);
     std::vector<long long> local_contribution_indices;
+    auto local_contribution_indices_memory = libbse::watch_memory("spectrum.local_contribution_indices", local_contribution_indices);
     std::vector<Complex> local_contribution_values;
-    for (int state = 0; state < nstates; ++state)
-        for (int local_index = 0;
-             local_index < amplitudes_x.local_pairs; ++local_index)
+    auto local_contribution_values_memory = libbse::watch_memory("spectrum.local_contribution_values", local_contribution_values);
+    visit([&](int state, int pair, Complex x, Complex y)
         {
-            const int pair = amplitudes_x.first_pair + local_index;
+            const int local_index = pair - velocity.first_pair;
             const int ik = pair / pair_dimension;
-            const Complex x = amplitudes_x(state, local_index);
-            const Complex y = amplitudes_y == nullptr
-                                  ? Complex{}
-                                  : (*amplitudes_y)(state, local_index);
             local_weight1[ik] += std::norm(x) + std::norm(y);
             if (std::abs(x) > 0.3)
             {
@@ -795,12 +813,22 @@ void write_velocity_gauge_outputs(
             {
                 const Complex v = velocity.values[velocity_index(
                     direction, local_index, velocity.local_pairs)];
+                local_dipoles[state][direction] +=
+                    Complex(0.,std::sqrt(2.)) * (v*x - std::conj(v)*y) / gap;
+                if (!has_y) local_momenta[state][direction] += v*x;
                 local_weight2[ik] += 2.0 * std::norm(v * x / gap)
                                      + 2.0 * std::norm(std::conj(v) * y / gap);
             }
-        }
+         });
+    MPI_Reduce(local_dipoles.data(), dipoles.data(), 3*nstates,
+               MPI_C_DOUBLE_COMPLEX, MPI_SUM, 0, dataset.comm_h.comm);
+    if (!has_y)
+        MPI_Reduce(local_momenta.data(), momenta.data(), 3*nstates,
+                   MPI_C_DOUBLE_COMPLEX, MPI_SUM, 0, dataset.comm_h.comm);
     std::vector<double> weight1(static_cast<std::size_t>(velocity.nk), 0.0);
+    auto weight1_memory = libbse::watch_memory("spectrum.weight1", weight1);
     std::vector<double> weight2(static_cast<std::size_t>(velocity.nk), 0.0);
+    auto weight2_memory = libbse::watch_memory("spectrum.weight2", weight2);
     MPI_Reduce(local_weight1.data(), rank == 0 ? weight1.data() : nullptr,
                velocity.nk, MPI_DOUBLE, MPI_SUM, 0, dataset.comm_h.comm);
     MPI_Reduce(local_weight2.data(), rank == 0 ? weight2.data() : nullptr,
@@ -820,13 +848,17 @@ void write_velocity_gauge_outputs(
     const int local_contribution_count =
         static_cast<int>(local_contribution_indices.size());
     std::vector<int> contribution_counts;
+    auto contribution_counts_memory = libbse::watch_memory("spectrum.contribution_counts", contribution_counts);
     if (rank == 0) contribution_counts.resize(static_cast<std::size_t>(mpi_size));
     MPI_Gather(&local_contribution_count, 1, MPI_INT,
                rank == 0 ? contribution_counts.data() : nullptr,
                1, MPI_INT, 0, dataset.comm_h.comm);
     std::vector<int> contribution_offsets;
+    auto contribution_offsets_memory = libbse::watch_memory("spectrum.contribution_offsets", contribution_offsets);
     std::vector<long long> contribution_indices;
+    auto contribution_indices_memory = libbse::watch_memory("spectrum.contribution_indices", contribution_indices);
     std::vector<Complex> contribution_values;
+    auto contribution_values_memory = libbse::watch_memory("spectrum.contribution_values", contribution_values);
     int total_count_valid = 1;
     if (rank == 0)
     {
@@ -878,6 +910,7 @@ void write_velocity_gauge_outputs(
     }
 
     std::vector<double> means(static_cast<std::size_t>(nstates));
+    auto means_memory = libbse::watch_memory("spectrum.means", means);
     for (int state = 0; state < nstates; ++state)
         means[state] = mean_squared(dipoles[state]);
     const auto oscillator_strengths
@@ -892,7 +925,7 @@ void write_velocity_gauge_outputs(
               << std::setprecision(10) << oscillator_sum << '\n';
 
     const fs::path output_dir(options.output_dir);
-    if (amplitudes_y == nullptr)
+    if (!has_y)
     {
         const auto file = output_dir / ("momentum_strength_" + label + ".dat");
         std::ofstream output(file);
@@ -946,6 +979,7 @@ void write_velocity_gauge_outputs(
              << "------------------------------------------------------------------------------------ \n";
     std::vector<std::vector<std::pair<int, Complex>>> contributions_by_state(
         static_cast<std::size_t>(nstates));
+    auto contributions_by_state_memory = libbse::watch_memory("spectrum.contributions_by_state", contributions_by_state);
     for (std::size_t index = 0; index < contribution_indices.size(); ++index)
     {
         const int state = static_cast<int>(contribution_indices[index]
@@ -994,6 +1028,75 @@ void write_velocity_gauge_outputs(
                 << std::setw(12) << k.y << std::setw(12) << k.z
                 << std::setw(12) << weight1[ik] << std::setw(12) << weight2[ik] << '\n';
     }
+}
+
+void write_velocity_gauge_outputs(
+    const InputParameters &options, const librpa_int::Dataset &dataset,
+    const FineVelocityMo &velocity, const std::vector<double> &energies,
+    const DistributedAmplitudes &x, const DistributedAmplitudes *y,
+    const std::string &spin, const std::string &kind)
+{
+    validate_distributed_velocity_inputs(dataset.comm_h.comm, options, velocity, x, y);
+    const auto visit = [&](const auto &consume) {
+        for (int state=0; state<x.nstates; ++state)
+            for (int pair=0; pair<x.local_pairs; ++pair)
+                consume(state, x.first_pair+pair, x(state,pair),
+                        y ? (*y)(state,pair) : Complex{});
+    };
+    write_velocity_gauge_outputs_impl(options,dataset,velocity,energies,
+                                     x.nstates,y!=nullptr,spin,kind,visit);
+}
+
+void write_tda_block_cyclic_outputs(
+    const InputParameters &options, const librpa_int::Dataset &dataset,
+    const FineVelocityMo &local_velocity, const std::vector<double> &energies,
+    const std::vector<Complex> &vectors, const librpa_int::ArrayDesc &desc,
+    const std::string &spin)
+{
+    const int dimension = desc.m();
+    const int nstates = static_cast<int>(energies.size());
+    int rank=0,size=1;
+    MPI_Comm_rank(desc.comm(), &rank); MPI_Comm_size(desc.comm(), &size);
+    const auto part=pair_partition(dimension,size,rank);
+    int valid = dimension==local_velocity.nk*options.nocc*options.nvirt
+        && desc.n()>=nstates && nstates>0
+        && local_velocity.first_pair==part.first && local_velocity.local_pairs==part.count
+        && vectors.size()==static_cast<std::size_t>(desc.lld())*desc.n_loc();
+    int all_valid=0; MPI_Allreduce(&valid,&all_valid,1,MPI_INT,MPI_MIN,desc.comm());
+    if (!all_valid) throw std::invalid_argument("invalid block-cyclic optical input");
+    validate_velocity_mo(options,local_velocity);
+    // Replicate only 3 velocity vectors and the gap vector: O(D), not O(D^2).
+    FineVelocityMo velocity;
+    auto velocity_memory = watch_memory("spectrum.velocity", velocity);
+    velocity.nk=local_velocity.nk; velocity.nbands=local_velocity.nbands;
+    velocity.first_pair=0; velocity.local_pairs=dimension;
+    velocity.values.resize(static_cast<std::size_t>(3)*dimension);
+    velocity.gaps_ha.resize(dimension);
+    std::vector<int> counts(size),offsets(size);
+    auto counts_memory = libbse::watch_memory("spectrum.counts", counts);
+    auto offsets_memory = libbse::watch_memory("spectrum.offsets", offsets);
+    for (int p=0;p<size;++p) {
+        const auto range=pair_partition(dimension,size,p);
+        counts[p]=range.count; offsets[p]=range.first;
+    }
+    MPI_Allgatherv(local_velocity.gaps_ha.data(),part.count,MPI_DOUBLE,
+                   velocity.gaps_ha.data(),counts.data(),offsets.data(),MPI_DOUBLE,desc.comm());
+    for(int axis=0;axis<3;++axis)
+        MPI_Allgatherv(part.count ? local_velocity.values.data()+static_cast<std::size_t>(axis)*part.count : nullptr,
+                       part.count,MPI_C_DOUBLE_COMPLEX,
+                       velocity.values.data()+static_cast<std::size_t>(axis)*dimension,
+                       counts.data(),offsets.data(),MPI_C_DOUBLE_COMPLEX,desc.comm());
+    const auto visit = [&](const auto &consume) {
+        for(int col=0;col<desc.n_loc();++col) {
+            const int state=desc.indx_l2g_c(col);
+            if(state>=nstates) continue;
+            for(int row=0;row<desc.m_loc();++row)
+                consume(state,desc.indx_l2g_r(row),
+                        vectors[static_cast<std::size_t>(col)*desc.lld()+row],Complex{});
+        }
+    };
+    write_velocity_gauge_outputs_impl(options,dataset,velocity,energies,
+                                     nstates,false,spin,"tda",visit);
 }
 
 } // namespace libbse

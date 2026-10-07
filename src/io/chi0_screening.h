@@ -1,4 +1,5 @@
 #pragma once
+#include "utils/memory.h"
 #include "interface/librpa_api.h"
 namespace libbse {
 // Dense test/reference entry point: a single Coulomb metric, without Gamma repair.
@@ -24,6 +25,7 @@ private:
     int diagnostic_index_ = 0;
     struct Channel { librpa_int::Matz sqrt_cut, inverse; };
     std::map<librpa_int::Vector3_Order<double>, Channel> channels_;
+    std::unique_ptr<MemoryWatch> memory_;
 };
 TensorMap<Complex> read_librpa_chi0(const InputParameters &, librpa_int::Dataset &,
                                  const std::vector<int> &, const std::vector<int> &,

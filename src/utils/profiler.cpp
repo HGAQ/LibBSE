@@ -1,8 +1,11 @@
 #include "profiler.h"
+#include "memory.h"
+#include <exception>
 
+#include <mpi.h>
 #include <algorithm>
 #include <iomanip>
-#include <ostream>
+#include <iostream>
 #include <sstream>
 #include <utility>
 
@@ -137,17 +140,43 @@ void Profiler::display(std::ostream &output) const
     output << get_profile_string();
 }
 
-ScopedTimer::ScopedTimer(Profiler &profiler, std::string name, std::string note)
-    : profiler_(&profiler), name_(std::move(name))
+ScopedTimer::ScopedTimer(Profiler &profiler, std::string name, std::string note,
+                         MPI_Comm comm)
+    : profiler_(&profiler), name_(std::move(name)), note_(std::move(note)),
+      comm_(comm), uncaught_(std::uncaught_exceptions())
 {
-    profiler_->start(name_, note);
+    MemoryTracker::instance().checkpoint();
+    if (memory_output_root(comm_))
+        std::cout << "  ==================================================\n"
+                  << "  | Start " << (note_.empty() ? name_ : note_) << " ...\n";
+    profiler_->start(name_, note_);
 }
 
 ScopedTimer::~ScopedTimer()
 {
-    if (profiler_ != nullptr) profiler_->stop(name_);
+    if (profiler_ == nullptr) return;
+    profiler_->stop(name_);
+    // An exception may only occur on one rank. Do not enter a collective while
+    // unwinding; the MPI driver aborts the communicator on a rank-local error.
+    if (std::uncaught_exceptions() > uncaught_) return;
+    const auto flags = std::cout.flags();
+    const auto precision = std::cout.precision();
+    if (memory_output_root(comm_))
+        std::cout << "  | Time of " << (note_.empty() ? name_ : note_) << ":\n"
+                  << "  |   Wall time: " << std::setw(10) << std::fixed << std::setprecision(2)
+                  << profiler_->get_wall_time_last(name_) << " s "
+                  << " CPU time : " << std::setw(10)
+                  << profiler_->get_cpu_time_last(name_) << " s\n";
+    // All communicator members participate BEFORE the rank-0-only footer.
+    // Local timers only report local data, explicitly labelled as such.
+    if (comm_ == MPI_COMM_NULL && memory_output_root(comm_))
+        std::cout << "  | Local memory \n";
+    MemoryTracker::instance().report_current(std::cout, comm_);
+    if (memory_output_root(comm_))
+        std::cout << "  ==================================================\n\n" << std::flush;
+    std::cout.flags(flags);
+    std::cout.precision(precision);
 }
-
 namespace global
 {
 Profiler profiler;

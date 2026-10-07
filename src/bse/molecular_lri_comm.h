@@ -20,6 +20,6 @@ void transform_k_2dlocal(
     std::vector<Complex> &matrix,
     const KMatrixMap &blocks,
     const librpa_int::ArrayDesc &descriptor,
-    int nk, int pair_dimension, double coefficient);
+    int nk, int pair_dimension, double coefficient, int k1_batch_size = 64);
 
 } // namespace libbse

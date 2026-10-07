@@ -1,3 +1,4 @@
+#include "utils/memory_views.h"
 #include "bse_files.h"
 
 #include <librpa_file_reader.hpp>
@@ -327,10 +328,12 @@ QuasiparticleBands read_qp_bands(const InputParameters &options,
 TensorMap<Complex> convert_lri_coefficients(librpa_int::Dataset &dataset)
 {
     TensorMap<Complex> result;
+    auto result_memory = watch_memory("RI.coefficients_complex", result);
     for (const auto &[iat, blocks] : dataset.cs_data.data_libri)
         for (const auto &[key, tensor] : blocks)
             result[static_cast<int>(iat)][{static_cast<int>(key.first), key.second}]
                 = RI::Global_Func::convert<Complex>(tensor);
+    MemoryTracker::instance().checkpoint();
     dataset.cs_data.clear();
     return result;
 }
@@ -343,6 +346,7 @@ TensorMap<Complex> read_screened_interaction(
     const std::vector<int> &local_j_atoms)
 {
     TensorMap<Complex> screened;
+    auto screened_memory = watch_memory("screening.W_R", screened);
     const fs::path wc_dir = options.screened_dir.empty()
         ? fs::path(options.input_dir).parent_path() / "librpa.d"
         : fs::path(options.screened_dir);

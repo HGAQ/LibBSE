@@ -69,7 +69,7 @@ add_library(libbse_core
   src/io/fhi_aims_adapter.cpp
   src/parameter/parameter.cpp
   src/utils/profiler.cpp
-  src/utils/progress.cpp
+  src/utils/memory.cpp
 )
 
 target_compile_features(libbse_core PUBLIC cxx_std_17)
@@ -80,6 +80,7 @@ target_include_directories(libbse_core
 )
 
 find_package(OpenMP REQUIRED COMPONENTS CXX)
+find_package(MPI REQUIRED COMPONENTS CXX)
 target_link_libraries(libbse_core PUBLIC librpa_file_reader OpenMP::OpenMP_CXX)
 
 add_executable(LibBSE driver/main.cpp)
@@ -106,17 +107,21 @@ if(LIBBSE_BUILD_TESTING)
 
   add_executable(test_profiler
     tests/test_profiler.cpp
-    src/utils/profiler.cpp)
+    src/utils/profiler.cpp
+    src/utils/memory.cpp)
+  target_link_libraries(test_profiler PRIVATE MPI::MPI_CXX)
   target_compile_features(test_profiler PRIVATE cxx_std_17)
   target_include_directories(test_profiler PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   add_test(NAME LibBSE_profiler COMMAND test_profiler)
 
-  add_executable(test_progress tests/test_progress.cpp)
-  target_link_libraries(test_progress PRIVATE libbse_core)
-  add_test(NAME LibBSE_progress_mpi
-    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
-            $<TARGET_FILE:test_progress>)
+  add_executable(test_memory tests/test_memory.cpp)
+  target_link_libraries(test_memory PRIVATE libbse_core)
+  foreach(ranks IN ITEMS 1 2 4)
+    add_test(NAME LibBSE_memory_${ranks}
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} $<TARGET_FILE:test_memory>)
+    set_tests_properties(LibBSE_memory_${ranks} PROPERTIES TIMEOUT 30)
+  endforeach()
 
   add_executable(test_spectrum_mpi tests/test_spectrum_mpi.cpp)
   target_link_libraries(test_spectrum_mpi PRIVATE libbse_core)
@@ -170,4 +175,22 @@ if(LIBBSE_BUILD_TESTING)
             $<TARGET_FILE:test_elpa_solver>)
   set_tests_properties(LibBSE_elpa_solver_serial LibBSE_elpa_solver_mpi PROPERTIES
     ENVIRONMENT "OMP_NUM_THREADS=2")
+endif()
+
+if(LIBBSE_BUILD_TESTING)
+  add_executable(test_spectrum_block_cyclic tests/test_spectrum_block_cyclic.cpp)
+  target_link_libraries(test_spectrum_block_cyclic PRIVATE libbse_core)
+  foreach(ranks IN ITEMS 1 2 3 4)
+    add_test(NAME LibBSE_block_cyclic_optics_${ranks}
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks}
+              $<TARGET_FILE:test_spectrum_block_cyclic>)
+    set_tests_properties(LibBSE_block_cyclic_optics_${ranks} PROPERTIES
+      ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
+  endforeach()
+endif()
+
+if(LIBBSE_BUILD_TESTING)
+  # Needs real producer data; run explicitly from an integration-case directory.
+  add_executable(test_ri_streaming tests/test_ri_streaming.cpp)
+  target_link_libraries(test_ri_streaming PRIVATE libbse_core)
 endif()

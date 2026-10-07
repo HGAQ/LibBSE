@@ -1,3 +1,5 @@
+#include "utils/memory_views.h"
+#include "utils/profiler.h"
 #include "molecular_lri.h"
 
 #include <RI/global/Array_Operator.h>
@@ -8,6 +10,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <limits>
+#include <iostream>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -74,6 +77,7 @@ std::vector<Complex> apply_wavefunction_gauge(
     const int basis_size = dataset.mf_band.get_n_aos();
     std::vector<Complex> phases(
         static_cast<std::size_t>(nk) * selected_bands, Complex(1.0, 0.0));
+    auto phases_memory = libbse::watch_memory("molecular_lri.phases", phases);
     // If the wavefunction gauge is not requested, return the default phases.
     const bool align_to_first_k = options.wavefunction_gauge == "first_k"
         || (options.wavefunction_gauge == "auto"
@@ -88,10 +92,12 @@ std::vector<Complex> apply_wavefunction_gauge(
     // Determine which MPI rank owns the wavefunction for each k-point,
     // and check that every k-point has an owner.
     std::vector<int> local_owners(static_cast<std::size_t>(nk), mpi_size);
+    auto local_owners_memory = libbse::watch_memory("molecular_lri.local_owners", local_owners);
     for (int ik = 0; ik != nk; ++ik)
         if (dataset.mf_band.find_wfc(0, 0, ik) != nullptr)
             local_owners[static_cast<std::size_t>(ik)] = rank;
     std::vector<int> owners(static_cast<std::size_t>(nk), mpi_size);
+    auto owners_memory = libbse::watch_memory("molecular_lri.owners", owners);
     MPI_Allreduce(local_owners.data(), owners.data(), nk, MPI_INT, MPI_MIN,
                   dataset.comm_h.comm);
     if (std::find(owners.begin(), owners.end(), mpi_size) != owners.end())
@@ -102,6 +108,7 @@ std::vector<Complex> apply_wavefunction_gauge(
     // The phases are stored in the returned vector, which is indexed by (ik * selected_bands + ib).
     std::vector<Complex> reference(
         static_cast<std::size_t>(selected_bands) * basis_size, Complex{});
+    auto reference_memory = libbse::watch_memory("molecular_lri.reference", reference);
     if (rank == owners[0]){
         const auto *wavefunctions = dataset.mf_band.find_wfc(0, 0, 0);
         if (wavefunctions == nullptr
@@ -120,6 +127,7 @@ std::vector<Complex> apply_wavefunction_gauge(
               MPI_C_DOUBLE_COMPLEX, owners[0], dataset.comm_h.comm);
 
     std::vector<Complex> owner_phases(phases.size(), Complex{});
+    auto owner_phases_memory = libbse::watch_memory("molecular_lri.owner_phases", owner_phases);
     for (int ik = 0; ik != nk; ++ik)
     {
         auto *wavefunctions = dataset.mf_band.find_wfc(0, 0, ik);
@@ -174,6 +182,7 @@ MolecularLri::MolecularLri(librpa_int::Dataset &dataset,
     if (!log_) throw std::runtime_error("cannot create LibRI log file");
 
     std::vector<KPoint> kpoints(static_cast<std::size_t>(nk_));
+    auto kpoints_memory = libbse::watch_memory("molecular_lri.kpoints", kpoints);
     for (int ik = 0; ik != nk_; ++ik)
     {
         const auto &k = dataset_.kfrac_band_list.at(static_cast<std::size_t>(ik));
@@ -182,6 +191,12 @@ MolecularLri::MolecularLri(librpa_int::Dataset &dataset,
     lr_.init(std::move(kpoints), options_.nocc, options_.nvirt);
     lr_.set_parallel(dataset_.comm_h.comm, dataset_.atoms.size(),
                      static_cast<std::size_t>(nk_), dataset_.pbc.period_array);
+    memory_ = std::make_unique<MemoryWatch>([this](MemoryVisitor &v) {
+        visit_memory(v, lr_.map_psi, "LibRI.wavefunctions");
+        visit_memory(v, lr_.Csk_ao_mo, "LibRI.Csk_ao_mo");
+        for (const auto &entry : lr_.lrik.data_pool)
+            visit_memory(v, entry.second.Ds_ab, "LibRI." + entry.first);
+    });
     build_exact_q_map();
 }
 
@@ -206,14 +221,24 @@ void MolecularLri::initialize(TensorMap<Complex> &Cs_in,
             dataset_.comm_h.comm, Cs_in, set_ij, all_atoms);
     }
     lr_.set_Cs(Cs_in, PARAM.constants.cs_threshold, set_ij, all_atoms);
+    libbse::MemoryTracker::instance().checkpoint();
     Cs_in.clear();
     lr_.set_Vs(Vs_in, PARAM.constants.coulomb_threshold, set_i, set_j);
+    libbse::MemoryTracker::instance().checkpoint();
     Vs_in.clear();
     lr_.set_Ws(Ws_in, PARAM.constants.coulomb_threshold, set_i, set_j);
+    libbse::MemoryTracker::instance().checkpoint();
     Ws_in.clear();
 
-    build_wavefunctions();
-    lr_.cal_Csk_ao_mo("Cs_", log_);
+    {
+        ScopedTimer timer(global::profiler, "libri_wavefunctions", "Prepare LibRI wavefunctions", dataset_.comm_h.comm);
+        build_wavefunctions();
+    }
+    {
+        ScopedTimer timer(global::profiler, "libri_Csk_ao_mo", "Transform RI coefficients AO to MO", dataset_.comm_h.comm);
+        lr_.cal_Csk_ao_mo("Cs_", log_);
+    }
+    MemoryTracker::instance().checkpoint();
     lr_.free_Cs();
 }
 
@@ -237,6 +262,7 @@ void MolecularLri::build_wavefunctions()
 {
     const auto atom_sizes = dataset_.basis_wfc.get_atom_nbs();
     std::vector<std::size_t> offsets(atom_sizes.size() + 1, 0);
+    auto offsets_memory = libbse::watch_memory("molecular_lri.offsets", offsets);
     for (std::size_t i = 0; i != atom_sizes.size(); ++i)
         offsets[i + 1] = offsets[i] + atom_sizes[i];
 
@@ -268,7 +294,7 @@ void transform_k_2dlocal(
     std::vector<Complex> &matrix,
     const KMatrixMap &blocks,
     const librpa_int::ArrayDesc &descriptor,
-    int nk, int pair_dimension, double coefficient)
+    int nk, int pair_dimension, double coefficient, int k1_batch_size)
 {
     if (matrix.size()
         != static_cast<std::size_t>(descriptor.lld()) * descriptor.n_loc())
@@ -280,16 +306,24 @@ void transform_k_2dlocal(
     MPI_Comm_size(descriptor.comm(), &mpi_size);
     const double factor = coefficient * PARAM.constants.ha_to_ry
                           / static_cast<double>(nk);
-    constexpr int k1_batch_size = 64;
+    if (k1_batch_size <= 0) throw std::invalid_argument("invalid k batch size");
     const MPI_Datatype block_head_type = block_head_mpi_type();
     std::vector<int> send_head_counts(static_cast<std::size_t>(mpi_size));
+    auto send_head_counts_memory = libbse::watch_memory("molecular_lri.send_head_counts", send_head_counts);
     std::vector<int> receive_head_counts(static_cast<std::size_t>(mpi_size));
+    auto receive_head_counts_memory = libbse::watch_memory("molecular_lri.receive_head_counts", receive_head_counts);
     std::vector<int> send_value_counts(static_cast<std::size_t>(mpi_size));
+    auto send_value_counts_memory = libbse::watch_memory("molecular_lri.send_value_counts", send_value_counts);
     std::vector<int> receive_value_counts(static_cast<std::size_t>(mpi_size));
+    auto receive_value_counts_memory = libbse::watch_memory("molecular_lri.receive_value_counts", receive_value_counts);
     std::vector<int> send_head_offsets(static_cast<std::size_t>(mpi_size));
+    auto send_head_offsets_memory = libbse::watch_memory("molecular_lri.send_head_offsets", send_head_offsets);
     std::vector<int> receive_head_offsets(static_cast<std::size_t>(mpi_size));
+    auto receive_head_offsets_memory = libbse::watch_memory("molecular_lri.receive_head_offsets", receive_head_offsets);
     std::vector<int> send_value_offsets(static_cast<std::size_t>(mpi_size));
+    auto send_value_offsets_memory = libbse::watch_memory("molecular_lri.send_value_offsets", send_value_offsets);
     std::vector<int> receive_value_offsets(static_cast<std::size_t>(mpi_size));
+    auto receive_value_offsets_memory = libbse::watch_memory("molecular_lri.receive_value_offsets", receive_value_offsets);
 
     const auto owner = [&](int global_row, int global_column)
     {
@@ -361,6 +395,15 @@ void transform_k_2dlocal(
                      receive_value_counts.data(), 1, MPI_INT,
                      descriptor.comm());
 
+        const int send_head_total = checked_total(
+            send_head_counts, "BSE matrix block-head send buffer");
+        const int receive_head_total = checked_total(
+            receive_head_counts, "BSE matrix block-head receive buffer");
+        const int send_value_total = checked_total(
+            send_value_counts, "BSE matrix-value send buffer");
+        const int receive_value_total = checked_total(
+            receive_value_counts, "BSE matrix-value receive buffer");
+
         for (int process = 1; process < mpi_size; ++process)
         {
             send_head_offsets[process] = send_head_offsets[process - 1]
@@ -372,25 +415,22 @@ void transform_k_2dlocal(
             receive_value_offsets[process] = receive_value_offsets[process - 1]
                                              + receive_value_counts[process - 1];
         }
-        const int send_head_total = checked_total(
-            send_head_counts, "BSE matrix block-head send buffer");
-        const int receive_head_total = checked_total(
-            receive_head_counts, "BSE matrix block-head receive buffer");
-        const int send_value_total = checked_total(
-            send_value_counts, "BSE matrix-value send buffer");
-        const int receive_value_total = checked_total(
-            receive_value_counts, "BSE matrix-value receive buffer");
-
         std::vector<BlockHead> send_heads(
             static_cast<std::size_t>(send_head_total));
+        auto send_heads_memory = libbse::watch_memory("molecular_lri.send_heads", send_heads);
         std::vector<BlockHead> receive_heads(
             static_cast<std::size_t>(receive_head_total));
+        auto receive_heads_memory = libbse::watch_memory("molecular_lri.receive_heads", receive_heads);
         std::vector<Complex> send_values(
             static_cast<std::size_t>(send_value_total));
+        auto send_values_memory = libbse::watch_memory("molecular_lri.send_values", send_values);
         std::vector<Complex> receive_values(
             static_cast<std::size_t>(receive_value_total));
+        auto receive_values_memory = libbse::watch_memory("molecular_lri.receive_values", receive_values);
         std::vector<int> head_cursor = send_head_offsets;
+        auto head_cursor_memory = libbse::watch_memory("molecular_lri.head_cursor", head_cursor);
         std::vector<int> value_cursor = send_value_offsets;
+        auto value_cursor_memory = libbse::watch_memory("molecular_lri.value_cursor", value_cursor);
 
         for (const auto &[k1, k2_blocks] : blocks)
         {
@@ -496,12 +536,88 @@ void transform_k_2dlocal(
     }
 }
 
+void MolecularLri::add_batched(std::vector<Complex> &matrix,
+                                const librpa_int::ArrayDesc &descriptor,
+                                double coefficient, bool hartree, bool is_a)
+{
+    const std::size_t limit = options_.bse_ri_batch_blocks;
+    const std::vector<std::string> psi = hartree
+        ? (is_a ? std::vector<std::string>{"O","V","O","V"}
+                : std::vector<std::string>{"O","V","O","V"})
+        : (is_a ? std::vector<std::string>{"O","O","V","V"}
+                : std::vector<std::string>{"V","O","O","V"});
+    // Only metadata is retained across batches, never all dense k-pair blocks.
+    std::vector<std::pair<KPoint, std::pair<int,int>>> pairs;
+    auto pairs_memory = libbse::watch_memory("molecular_lri.pairs", pairs);
+    if (!hartree)
+        for (const auto &[q, entries] : lr_.q2kpair)
+            for (const auto &entry : entries) pairs.emplace_back(q, entry);
+    const std::size_t col_batches = (lr_.k2_indices.size() + limit - 1) / limit;
+    unsigned long long batches = hartree ? lr_.k1_indices.size() * col_batches
+                                         : (pairs.size() + limit - 1) / limit;
+    unsigned long long rounds = 0;
+    MPI_Allreduce(&batches, &rounds, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX,
+                  descriptor.comm());
+    int rank = 0; MPI_Comm_rank(descriptor.comm(), &rank);
+    if (rank == 0)
+        std::cout << "RI streaming: " << (hartree ? "Hartree" : "screened")
+                  << " max " << limit << " k-pair blocks/rank, " << rounds
+                  << " collective batches\n";
+    for (unsigned long long batch = 0; batch < rounds; ++batch)
+    {
+        KMatrixMap blocks;
+        auto blocks_memory = watch_memory("LibRI.batch_blocks", blocks);
+        if (batch < batches)
+        {
+            if (hartree)
+            {
+                const std::vector<int> rows{lr_.k1_indices[batch / col_batches]};
+                auto rows_memory = libbse::watch_memory("molecular_lri.rows", rows);
+                const auto begin = (batch % col_batches) * limit;
+                const auto end = std::min<std::size_t>(begin + limit, lr_.k2_indices.size());
+                const std::vector<int> cols(lr_.k2_indices.begin() + begin,
+                                            lr_.k2_indices.begin() + end);
+                auto cols_memory = libbse::watch_memory("molecular_lri.cols", cols);
+                blocks = lr_.lrik.cal_cvc_mo_k_hartree_onthefly(
+                    lr_.Csk_ao_mo, lr_.map_psi, rows, cols, lr_.list_I, lr_.list_J,
+                    psi, options_.nocc, options_.nvirt, "Vs_", is_a);
+            }
+            else
+            {
+                std::map<KPoint, std::vector<std::pair<int,int>>> q_pairs;
+                const auto end = std::min<std::size_t>((batch + 1) * limit, pairs.size());
+                for (std::size_t i = batch * limit; i < end; ++i)
+                    q_pairs[pairs[i].first].push_back(pairs[i].second);
+                std::vector<KPoint> qs;
+                auto qs_memory = libbse::watch_memory("molecular_lri.qs", qs);
+                for (const auto &entry : q_pairs) qs.push_back(entry.first);
+                blocks = lr_.lrik.cal_cvc_mo_k_onthefly(
+                    lr_.Csk_ao_mo, lr_.map_psi, lr_.k1_indices, lr_.k2_indices,
+                    lr_.list_I, lr_.list_J, psi, options_.nocc, options_.nvirt,
+                    "Ws_", is_a, qs, q_pairs);
+            }
+        }
+        MemoryTracker::instance().checkpoint();
+        // Empty ranks participate too. Every rank uses the same global rounds.
+        // The generated block set is already bounded, so exchange it once.
+        transform_k_2dlocal(matrix, blocks, descriptor, nk_, pair_dimension_,
+                           coefficient, nk_);
+    }
+}
+
 void MolecularLri::add_hartree_a(std::vector<Complex> &matrix,
                                  const librpa_int::ArrayDesc &descriptor,
                                  double coefficient)
 {
+    if (options_.bse_memory_optimized && options_.bse_ri_batch_blocks > 0)
+    {
+        add_batched(matrix, descriptor, coefficient, true, true);
+        return;
+    }
+
     auto blocks = lr_.cal_cvc_mo_k_hartree_onthefly(
         {"O", "V", "O", "V"}, "Vs_", true);
+    auto blocks_memory = watch_memory("LibRI.blocks", blocks);
     transform_k_2dlocal(
         matrix, blocks, descriptor, nk_, pair_dimension_, coefficient);
 }
@@ -510,8 +626,15 @@ void MolecularLri::add_hartree_b(std::vector<Complex> &matrix,
                                  const librpa_int::ArrayDesc &descriptor,
                                  double coefficient)
 {
+    if (options_.bse_memory_optimized && options_.bse_ri_batch_blocks > 0)
+    {
+        add_batched(matrix, descriptor, coefficient, true, false);
+        return;
+    }
+
     auto blocks = lr_.cal_cvc_mo_k_hartree_onthefly(
         {"O", "V", "O", "V"}, "Vs_", false);
+    auto blocks_memory = watch_memory("LibRI.blocks", blocks);
     transform_k_2dlocal(
         matrix, blocks, descriptor, nk_, pair_dimension_, coefficient);
 }
@@ -520,8 +643,15 @@ void MolecularLri::add_screened_a(std::vector<Complex> &matrix,
                                   const librpa_int::ArrayDesc &descriptor,
                                   double coefficient)
 {
+    if (options_.bse_memory_optimized && options_.bse_ri_batch_blocks > 0)
+    {
+        add_batched(matrix, descriptor, coefficient, false, true);
+        return;
+    }
+
     auto blocks = lr_.cal_cvc_mo_k_onthefly(
         {"O", "O", "V", "V"}, "Ws_", true);
+    auto blocks_memory = watch_memory("LibRI.blocks", blocks);
     transform_k_2dlocal(
         matrix, blocks, descriptor, nk_, pair_dimension_, coefficient);
 }
@@ -530,8 +660,15 @@ void MolecularLri::add_screened_b(std::vector<Complex> &matrix,
                                   const librpa_int::ArrayDesc &descriptor,
                                   double coefficient)
 {
+    if (options_.bse_memory_optimized && options_.bse_ri_batch_blocks > 0)
+    {
+        add_batched(matrix, descriptor, coefficient, false, false);
+        return;
+    }
+
     auto blocks = lr_.cal_cvc_mo_k_onthefly(
         {"V", "O", "O", "V"}, "Ws_", false);
+    auto blocks_memory = watch_memory("LibRI.blocks", blocks);
     transform_k_2dlocal(
         matrix, blocks, descriptor, nk_, pair_dimension_, coefficient);
 }
@@ -542,6 +679,7 @@ void MolecularLri::replace_screened(TensorMap<Complex> &screened)
     const std::set<int> rows(lr_.list_I.begin(), lr_.list_I.end());
     const std::set<int> cols(lr_.list_J.begin(), lr_.list_J.end());
     lr_.set_Ws(screened, PARAM.constants.coulomb_threshold, rows, cols);
+    libbse::MemoryTracker::instance().checkpoint();
     screened.clear();
 }
 

@@ -7,6 +7,7 @@
 #include <array>
 #include <complex>
 #include <map>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -64,6 +65,20 @@ struct DistributedAmplitudes
     {
         return values[amplitude_offset(state, local_pairs, local_pair)];
     }
+};
+
+struct IpaSolution
+{
+    std::vector<double> energies;
+    DistributedAmplitudes amplitudes;
+};
+
+struct ChannelSolution
+{
+    std::string spin_type;
+    std::vector<double> energies;
+    DistributedAmplitudes amplitudes_x;
+    DistributedAmplitudes amplitudes_y;
 };
 
 } // namespace libbse

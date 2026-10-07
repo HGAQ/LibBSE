@@ -58,10 +58,14 @@ ctest --test-dir build-bse --output-on-failure
   data, and verifies that the reduced transition dipole reaches rank 0. It
   also checks independent rank-specific amplitude file write/read.
 
-## `test_progress.cpp`
+## `test_memory.cpp`
 
-- `main()` checks the `DONE(elapsed SEC) : description` format
-  and verifies that only communicator rank 0 writes the completion marker.
+- Checks capacity accounting, shared RI storage deduplication, move/release
+  behavior, peak/allocation provenance and nonzero live residuals.
+- Runs on 1, 2 and 4 MPI ranks to verify minima, maxima, averages and root-only
+  output, plus local scopes, subcommunicators and rank-local exception unwinding.
+- `ScopedTimer` is safe before MPI initialization and after finalization; the
+  serial profiler test also exercises operation without MPI initialization.
 
 ## `test_bse_files.cpp`
 

@@ -12,6 +12,7 @@
 namespace librpa_int
 {
 class Dataset;
+class ArrayDesc;
 }
 
 namespace libbse
@@ -83,6 +84,13 @@ std::vector<std::array<Complex, 3>> tda_transition_momenta_mpi(
     MPI_Comm comm, const InputParameters &options,
     const FineVelocityMo &velocity_mo,
     const DistributedAmplitudes &amplitudes);
+
+// Contract directly on ELPA's block-cyclic eigenvectors; no full amplitude copy.
+void write_tda_block_cyclic_outputs(
+    const InputParameters &options, const librpa_int::Dataset &dataset,
+    const FineVelocityMo &velocity, const std::vector<double> &energies,
+    const std::vector<Complex> &vectors, const librpa_int::ArrayDesc &descriptor,
+    const std::string &spin_type);
 
 void write_velocity_gauge_outputs(
     const InputParameters &options,

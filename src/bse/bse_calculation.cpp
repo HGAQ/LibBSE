@@ -10,7 +10,7 @@
 #include "io/bse_files.h"
 #include "interface/librpa_api.h"
 #include "utils/profiler.h"
-#include "utils/progress.h"
+#include "utils/memory_views.h"
 
 #include <mpi.h>
 
@@ -43,6 +43,7 @@ std::vector<double> read_energies(const fs::path &file, int nstates)
     std::ifstream input(file);
     if (!input) throw std::runtime_error("cannot read " + file.string());
     std::vector<double> values(static_cast<std::size_t>(nstates));
+    auto values_memory = libbse::watch_memory("bse_calculation.values", values);
     for (double &value : values)
         if (!(input >> value))
             throw std::runtime_error("truncated excitation-energy file "
@@ -120,12 +121,6 @@ void assemble_channel_matrix(
     }
 }
 
-struct IpaSolution
-{
-    std::vector<double> energies;
-    DistributedAmplitudes amplitudes;
-};
-
 IpaSolution solve_ipa_tda(const QuasiparticleBands &qp,
                           const InputParameters &options, int nstates,
                           MPI_Comm comm)
@@ -133,6 +128,7 @@ IpaSolution solve_ipa_tda(const QuasiparticleBands &qp,
     const int pair_dimension = options.nocc * options.nvirt;
     const int dimension = qp.nk * pair_dimension;
     std::vector<double> gaps(static_cast<std::size_t>(dimension));
+    auto gaps_memory = libbse::watch_memory("bse_calculation.gaps", gaps);
     for (int ik = 0; ik < qp.nk; ++ik)
     {
         const auto offset = static_cast<std::size_t>(ik) * qp.nbands;
@@ -146,11 +142,13 @@ IpaSolution solve_ipa_tda(const QuasiparticleBands &qp,
     }
 
     std::vector<int> indices(static_cast<std::size_t>(dimension));
+    auto indices_memory = libbse::watch_memory("bse_calculation.indices", indices);
     std::iota(indices.begin(), indices.end(), 0);
     std::sort(indices.begin(), indices.end(),
               [&gaps](int left, int right) { return gaps[left] < gaps[right]; });
 
     IpaSolution result;
+    auto result_memory = watch_memory("result", result);
     result.energies.resize(static_cast<std::size_t>(nstates));
     result.amplitudes = make_distributed_amplitudes(
         comm, dimension, nstates);
@@ -167,31 +165,24 @@ IpaSolution solve_ipa_tda(const QuasiparticleBands &qp,
     return result;
 }
 
-struct ChannelResults
-{
-    std::string spin_type;
-    std::vector<double> energies;
-    DistributedAmplitudes amplitudes_x;
-    DistributedAmplitudes amplitudes_y;
-};
-
 } // namespace
 
 void run_bse(const InputParameters &options,
              const std::shared_ptr<librpa_int::Dataset> &dataset)
 {
-    ScopedTimer run_timer(global::profiler, "run_bse", "BSE calculation");
+    ScopedTimer run_timer(global::profiler, "run_bse", "BSE calculation", dataset->comm_h.comm);
     int rank = 0;
     MPI_Comm_rank(dataset->comm_h.comm, &rank);
     fs::create_directories(options.output_dir);
 
     // Read quasiparticle bands from the dataset and report the gaps.
-    const auto qp = [&]()
+    QuasiparticleBands qp;
+    auto qp_memory = watch_memory("qp", qp);
     {
         ScopedTimer timer(global::profiler, "read_qp_bands",
-                          "Read quasiparticle bands");
-        return read_qp_bands(options, *dataset);
-    }();
+                          "Read quasiparticle bands", dataset->comm_h.comm);
+        qp = read_qp_bands(options, *dataset);
+    }
     if (rank == 0)
     {
         std::cout << "BSE quasiparticle bands\n"
@@ -205,8 +196,12 @@ void run_bse(const InputParameters &options,
     // Apply the band gauge once, before either Hamiltonian construction or a
     // spectrum-only restart.  Keep the phases so a separately supplied
     // same-grid velocity matrix can be transformed covariantly as well.
-    const auto band_gauge_phases
-        = apply_wavefunction_gauge(*dataset, options, qp);
+    std::vector<Complex> band_gauge_phases;
+    auto gauge_memory = watch_memory("band_gauge_phases", band_gauge_phases);
+    {
+        ScopedTimer timer(global::profiler, "wavefunction_gauge", "Apply wavefunction gauge", dataset->comm_h.comm);
+        band_gauge_phases = apply_wavefunction_gauge(*dataset, options, qp);
+    }
 
     const int dimension = qp.nk * options.nocc * options.nvirt;
     const int nstates = options.bse_nstates < 0 ? dimension : options.bse_nstates;
@@ -219,62 +214,66 @@ void run_bse(const InputParameters &options,
     {
         if (rank == 0)
             std::cout << "Preparing fine-grid velocity_mo for velocity gauge...\n";
-        const auto velocity = [&]()
+        FineVelocityMo velocity;
+        auto velocity_memory = watch_memory("velocity", velocity);
         {
             ScopedTimer timer(global::profiler, "prepare_velocity_mo",
-                              "Prepare fine-grid velocity_mo");
-            return prepare_fine_velocity_mo(
+                              "Prepare fine-grid velocity_mo", dataset->comm_h.comm);
+            velocity = prepare_fine_velocity_mo(
                 options, qp, dataset, band_gauge_phases);
-        }();
-        done("prepare velocity matrix in MO representation",
-             dataset->comm_h.comm);
+        }
 
         for (const std::string &spin_type : options.bse_spin_types)
         {
             if (options.solve_tda())
             {
-                ChannelResults channel;
+                ChannelSolution channel;
+                auto channel_memory = watch_memory("channel", channel);
                 channel.spin_type = spin_type;
-                if (rank == 0)
                 {
                     ScopedTimer timer(global::profiler, "read_tda_eigenstates",
-                                      "Read TDA eigenstates");
-                    channel.energies = read_energies(
-                        energy_file(options, spin_type, false), nstates);
+                                      "Read TDA eigenstates", dataset->comm_h.comm);
+                    if (rank == 0)
+                    {
+                        channel.energies = read_energies(
+                            energy_file(options, spin_type, false), nstates);
+                    }
                 }
                 {
                     ScopedTimer timer(global::profiler,
                                       "read_tda_amplitudes",
-                                      "Read distributed TDA amplitudes");
+                                      "Read distributed TDA amplitudes", dataset->comm_h.comm);
                     channel.amplitudes_x = read_distributed_amplitudes(
                         amplitude_file(options, spin_type, "", rank),
                         dataset->comm_h.comm, dimension, nstates);
                 }
                 {
                     ScopedTimer timer(global::profiler, "tda_spectrum",
-                                      "Calculate TDA velocity-gauge spectrum");
+                                      "Calculate TDA velocity-gauge spectrum", dataset->comm_h.comm);
                     write_velocity_gauge_outputs(
                         options, *dataset, velocity, channel.energies,
                         channel.amplitudes_x, nullptr, spin_type, "tda");
                 }
-                done("calculate TDA velocity-gauge spectrum " + spin_type,
-                     dataset->comm_h.comm);
+
             }
             if (options.solve_full())
             {
-                ChannelResults channel;
+                ChannelSolution channel;
+                auto channel_memory = watch_memory("channel", channel);
                 channel.spin_type = spin_type;
-                if (rank == 0)
                 {
                     ScopedTimer timer(global::profiler, "read_full_eigenstates",
-                                      "Read full-BSE eigenstates");
-                    channel.energies = read_energies(
-                        energy_file(options, spin_type, true), nstates);
+                                      "Read full-BSE eigenstates", dataset->comm_h.comm);
+                    if (rank == 0)
+                    {
+                        channel.energies = read_energies(
+                            energy_file(options, spin_type, true), nstates);
+                    }
                 }
                 {
                     ScopedTimer timer(global::profiler,
                                       "read_full_amplitudes",
-                                      "Read distributed full-BSE amplitudes");
+                                      "Read distributed full-BSE amplitudes", dataset->comm_h.comm);
                     channel.amplitudes_x = read_distributed_amplitudes(
                         amplitude_file(options, spin_type, "full_X_", rank),
                         dataset->comm_h.comm, dimension, nstates);
@@ -284,14 +283,13 @@ void run_bse(const InputParameters &options,
                 }
                 {
                     ScopedTimer timer(global::profiler, "full_spectrum",
-                                      "Calculate full-BSE velocity-gauge spectrum");
+                                      "Calculate full-BSE velocity-gauge spectrum", dataset->comm_h.comm);
                     write_velocity_gauge_outputs(
                         options, *dataset, velocity, channel.energies,
                         channel.amplitudes_x, &channel.amplitudes_y,
                         spin_type, "full");
                 }
-                done("calculate full-BSE velocity-gauge spectrum " + spin_type,
-                     dataset->comm_h.comm);
+
             }
         }
         return;
@@ -303,29 +301,32 @@ void run_bse(const InputParameters &options,
         if (rank == 0)
             std::cout << "Independent particle approximation: "
                          "building sorted transition states directly...\n";
-        ChannelResults channel;
+        ChannelSolution channel;
+        auto channel_memory = watch_memory("channel", channel);
         channel.spin_type = "ipa";
         {
             ScopedTimer timer(global::profiler, "solve_ipa",
-                              "Build independent-particle TDA states");
+                              "Build independent-particle TDA states", dataset->comm_h.comm);
             auto solution = solve_ipa_tda(
                 qp, options, nstates, dataset->comm_h.comm);
             channel.energies = std::move(solution.energies);
             channel.amplitudes_x = std::move(solution.amplitudes);
         }
-        done("build independent-particle TDA states", dataset->comm_h.comm);
-        if (rank == 0)
+
         {
             ScopedTimer timer(global::profiler, "write_tda_results",
-                              "Write TDA eigenstates");
-            write_energies(energy_file(options, "ipa", false),
-                           channel.energies);
+                              "Write TDA eigenstates", dataset->comm_h.comm);
+            if (rank == 0)
+            {
+                write_energies(energy_file(options, "ipa", false),
+                               channel.energies);
+            }
         }
         if (options.out_bse_eigenvectors)
         {
             ScopedTimer timer(global::profiler,
                               "write_tda_amplitudes",
-                              "Write distributed TDA amplitudes");
+                              "Write distributed TDA amplitudes", dataset->comm_h.comm);
             write_distributed_amplitudes(
                 amplitude_file(options, "ipa", "", rank),
                 channel.amplitudes_x);
@@ -333,24 +334,23 @@ void run_bse(const InputParameters &options,
 
         if (rank == 0)
             std::cout << "Preparing fine-grid velocity_mo for velocity gauge...\n";
-        const auto velocity = [&]()
+        FineVelocityMo velocity;
+        auto velocity_memory = watch_memory("velocity", velocity);
         {
             ScopedTimer timer(global::profiler, "prepare_velocity_mo",
-                              "Prepare fine-grid velocity_mo");
-            return prepare_fine_velocity_mo(
+                              "Prepare fine-grid velocity_mo", dataset->comm_h.comm);
+            velocity = prepare_fine_velocity_mo(
                 options, qp, dataset, band_gauge_phases);
-        }();
-        done("prepare velocity matrix in MO representation",
-             dataset->comm_h.comm);
+        }
+
         {
             ScopedTimer timer(global::profiler, "tda_spectrum",
-                              "Calculate TDA velocity-gauge spectrum");
+                              "Calculate TDA velocity-gauge spectrum", dataset->comm_h.comm);
             write_velocity_gauge_outputs(
                 options, *dataset, velocity, channel.energies,
                 channel.amplitudes_x, nullptr, "ipa", "tda");
         }
-        done("calculate TDA velocity-gauge spectrum ipa",
-             dataset->comm_h.comm);
+
         return;
     }
 
@@ -358,13 +358,13 @@ void run_bse(const InputParameters &options,
     // 1. Transform the cut Coulomb interaction from q to R space using LibRPA.
     if (rank == 0)
         std::cout << "Transforming cut Coulomb from q to R with LibRPA FT_Vq...\n";
-    auto bare = [&]()
+    TensorMap<Complex> bare;
+    auto bare_memory = watch_memory("bare", bare);
     {
         ScopedTimer timer(global::profiler, "transform_bare_coulomb",
-                          "Transform bare Coulomb q to R");
-        return LibRPA_API::build_bare_coulomb(*dataset);
-    }();
-    done("transform cut Coulomb from q to R", dataset->comm_h.comm);
+                          "Transform bare Coulomb q to R", dataset->comm_h.comm);
+        bare = LibRPA_API::build_bare_coulomb(*dataset);
+    }
 
     MolecularLri molecular(*dataset, options, qp);
     Chi0Screening dielectric(options, *dataset);
@@ -372,10 +372,12 @@ void run_bse(const InputParameters &options,
     // first screen complete q-space matrices; only the legacy Wc reader adds V.
     if (rank == 0)
         std::cout << "Reading screened interaction (" << options.screened_format << ")...\n";
-    auto screened = [&]()
+    TensorMap<Complex> screened;
+    auto screened_memory = watch_memory("screened", screened);
     {
         ScopedTimer timer(global::profiler, "read_screened_interaction",
-                          "Read and construct screened interaction");
+                          "Read and construct screened interaction", dataset->comm_h.comm);
+        screened = [&]() {
         if (options.screened_format == "fhi_aims_w" || options.screened_format == "fhi_aims_chi0")
             return read_aims_screened_interaction(options, *dataset,
                 molecular.local_i_atoms(), molecular.local_j_atoms(), &dielectric);
@@ -385,38 +387,38 @@ void run_bse(const InputParameters &options,
                                          dataset->pbc.Rlist.size(),
                                          molecular.local_i_atoms(),
                                          molecular.local_j_atoms());
-    }();
-    done("read and construct screened interaction",
-         dataset->comm_h.comm);
+        }();
+    }
+
     //3. Convert the LibRPA Cs tensors to LibRI coefficients for the BSE contractions.
     if (rank == 0)
         std::cout << "Converting LibRPA Cs tensors for complex LibRI contractions...\n";
-    auto coefficients = [&]()
+    TensorMap<Complex> coefficients;
+    auto coefficients_memory = watch_memory("coefficients", coefficients);
     {
         ScopedTimer timer(global::profiler, "convert_ri_coefficients",
-                          "Convert RI coefficients for LibRI");
-        return convert_lri_coefficients(*dataset);
-    }();
-    done("convert RI coefficients for LibRI", dataset->comm_h.comm);
+                          "Convert RI coefficients for LibRI", dataset->comm_h.comm);
+        coefficients = convert_lri_coefficients(*dataset);
+    }
+
     //4. Remap the interactions to the nearest BvK cells.
 
     {
         ScopedTimer timer(global::profiler, "remap_bvk_cells",
-                          "Remap interactions to nearest BvK cells");
+                          "Remap interactions to nearest BvK cells", dataset->comm_h.comm);
         remap_to_nearest_bvk_cell(coefficients, *dataset);
         remap_to_nearest_bvk_cell(bare, *dataset);
         remap_to_nearest_bvk_cell(screened, *dataset);
     }
-    done("remap interactions to nearest BvK cells", dataset->comm_h.comm);
+
     //5. Initialize the LibRI BSE contractions and construct the Hartree and screened contributions.
     if (rank == 0)
         std::cout << "Initializing external LibRI RI::LR...\n";
     {
         ScopedTimer timer(global::profiler, "initialize_libri",
-                          "Initialize LibRI BSE contractions");
+                          "Initialize LibRI BSE contractions", dataset->comm_h.comm);
         molecular.initialize(coefficients, bare, screened);
     }
-    done("initialize LibRI BSE contractions", dataset->comm_h.comm);
 
     librpa_int::ArrayDesc descriptor(dataset->blacs_h);
     const int block_size = dimension > 1000 ? 64 : (dimension > 500 ? 32 : 1);
@@ -426,50 +428,56 @@ void run_bse(const InputParameters &options,
                                    * descriptor.n_loc();
 
     std::vector<Complex> hartree_a;
+    auto hartree_a_memory = libbse::watch_memory("bse_calculation.hartree_a", hartree_a);
     std::vector<Complex> screened_a;
+    auto screened_a_memory = libbse::watch_memory("bse_calculation.screened_a", screened_a);
     std::vector<Complex> hartree_b;
+    auto hartree_b_memory = libbse::watch_memory("bse_calculation.hartree_b", hartree_b);
     std::vector<Complex> screened_b;
+    auto screened_b_memory = libbse::watch_memory("bse_calculation.screened_b", screened_b);
     if (options.requires_hartree())
     {
         hartree_a.assign(local_size, Complex{});
         {
-            ScopedTimer timer(global::profiler, "hartree_a", "LibRI Hartree A");
+            ScopedTimer timer(global::profiler, "hartree_a", "LibRI Hartree A", dataset->comm_h.comm);
             molecular.add_hartree_a(hartree_a, descriptor, 1.0);
         }
-        done("construct Hartree contribution for A", dataset->comm_h.comm);
+
     }
     if (options.requires_screened())
     {
         screened_a.assign(local_size, Complex{});
         {
-            ScopedTimer timer(global::profiler, "screened_a", "LibRI screened A");
+            ScopedTimer timer(global::profiler, "screened_a", "LibRI screened A", dataset->comm_h.comm);
             molecular.add_screened_a(screened_a, descriptor, 1.0);
         }
-        done("construct screened contribution for A", dataset->comm_h.comm);
+
     }
     // Construct the B contributions only if the full BSE is requested, since they are not needed for TDA.
     if (options.solve_full() && options.requires_hartree())
     {
         hartree_b.assign(local_size, Complex{});
         {
-            ScopedTimer timer(global::profiler, "hartree_b", "LibRI Hartree B");
+            ScopedTimer timer(global::profiler, "hartree_b", "LibRI Hartree B", dataset->comm_h.comm);
             molecular.add_hartree_b(hartree_b, descriptor, 1.0);
         }
-        done("construct Hartree contribution for B", dataset->comm_h.comm);
+
     }
     if (options.solve_full() && options.requires_screened())
     {
         screened_b.assign(local_size, Complex{});
         {
-            ScopedTimer timer(global::profiler, "screened_b", "LibRI screened B");
+            ScopedTimer timer(global::profiler, "screened_b", "LibRI screened B", dataset->comm_h.comm);
             molecular.add_screened_b(screened_b, descriptor, 1.0);
         }
-        done("construct screened contribution for B", dataset->comm_h.comm);
+
     }
     molecular.release_interactions();
     //6. Assemble the channel matrices, check their symmetry, and diagonalize them with ELPA.
-    std::vector<ChannelResults> tda_results;
-    std::vector<ChannelResults> full_results;
+    std::vector<ChannelSolution> tda_solutions;
+    auto tda_solutions_memory = watch_memory("tda_solutions", tda_solutions);
+    std::vector<ChannelSolution> full_solutions;
+    auto full_solutions_memory = watch_memory("full_solutions", full_solutions);
     if (options.solve_tda())
     {
         for (const std::string &spin_type : options.bse_spin_types)
@@ -477,37 +485,43 @@ void run_bse(const InputParameters &options,
             const auto channel_coefficients =
                 interaction_coefficients(spin_type);
             std::vector<Complex> matrix;
+            auto matrix_memory = watch_memory("matrix", matrix);
             {
                 ScopedTimer timer(global::profiler, "assemble_tda_matrix",
-                                  "Assemble channel TDA matrix");
+                                  "Assemble channel TDA matrix", dataset->comm_h.comm);
                 assemble_channel_matrix(
                     matrix, descriptor, qp, options, channel_coefficients,
                     hartree_a, screened_a);
             }
+            if (options.bse_memory_optimized && !options.solve_full()
+                && options.bse_spin_types.size()==1 && options.bse_plasma_energy_ev<=0.)
+            {
+                std::vector<Complex>().swap(hartree_a);
+                std::vector<Complex>().swap(screened_a);
+            }
             {
                 ScopedTimer timer(global::profiler, "check_tda_a_matrix",
-                                  "Check TDA A-matrix Hermiticity");
+                                  "Check TDA A-matrix Hermiticity", dataset->comm_h.comm);
                 check_hermitian(
                     matrix, descriptor,
                     PARAM.constants.matrix_symmetry_threshold);
             }
-            done("initialize and check " + spin_type + " TDA A matrix",
-                 dataset->comm_h.comm);
+
             if (rank == 0)
                 std::cout << "Diagonalizing " << spin_type
                           << " TDA matrix with ELPA...\n";
             EigenSolution solution;
+            auto solution_memory = watch_memory("solution", solution);
             {
                 ScopedTimer timer(global::profiler, "solve_tda_elpa",
-                                  "Diagonalize TDA matrix with ELPA");
+                                  "Diagonalize TDA matrix with ELPA", dataset->comm_h.comm);
                 solution = solve_tda_elpa(
                     matrix, descriptor, options.bse_nstates);
             }
-            done("diagonalize " + spin_type + " TDA matrix with ELPA",
-                 dataset->comm_h.comm);
 
             if (options.bse_plasma_energy_ev > 0 && channel_coefficients.screened != 0.)
             {
+                ScopedTimer effective_timer(global::profiler, "effective_bse", "One-shot effective BSE", dataset->comm_h.comm);
                 // Match the reference aims one-shot prescription: Eb=Eg-E_static.
                 // Eg is the smallest DIRECT transition on the actual BSE QP grid,
                 // not Si's indirect gap. The kernel targets the lowest static
@@ -522,6 +536,7 @@ void run_bse(const InputParameters &options,
                 remap_to_nearest_bvk_cell(effective_w, *dataset);
                 molecular.replace_screened(effective_w);
                 std::vector<Complex> effective_a(local_size, Complex{});
+                auto effective_memory = watch_memory("effective_A", effective_a);
                 molecular.add_screened_a(effective_a, descriptor, 1.0);
                 molecular.release_interactions();
                 assemble_channel_matrix(matrix, descriptor, qp, options,
@@ -547,43 +562,78 @@ void run_bse(const InputParameters &options,
                               << " eV, binding from static lowest " << spin_type << " = " << binding_ev << " eV\n";
                 }
             }
+            if (options.bse_memory_optimized)
+                std::vector<Complex>().swap(matrix);
+            if (options.bse_memory_optimized && !options.out_bse_eigenvectors)
+            {
+                {
+                    ScopedTimer timer(global::profiler, "write_tda_results",
+                                      "Write TDA eigenstates", dataset->comm_h.comm);
+                    if (rank==0)
+                    {
+                        write_energies(energy_file(options, spin_type, false), solution.energies_ry);
+                        std::cout << std::setprecision(10) << spin_type
+                                  << " TDA lowest excitation (eV): "
+                                  << solution.energies_ry.front()*PARAM.constants.ry_to_ev << '\n'
+                                  << spin_type << " TDA binding energy (eV): "
+                                  << (qp.direct_gap_ry-solution.energies_ry.front())*PARAM.constants.ry_to_ev << '\n';
+                    }
+                }
+                FineVelocityMo velocity;
+                auto velocity_memory = watch_memory("velocity", velocity);
+                {
+                    ScopedTimer timer(global::profiler, "prepare_velocity_mo", "Prepare fine-grid velocity_mo", dataset->comm_h.comm);
+                    velocity = prepare_fine_velocity_mo(options, qp, dataset, band_gauge_phases);
+                }
+                {
+                    ScopedTimer timer(global::profiler, "tda_spectrum_block_cyclic",
+                                      "TDA optics on block-cyclic eigenvectors", dataset->comm_h.comm);
+                    write_tda_block_cyclic_outputs(options, *dataset, velocity,
+                        solution.energies_ry, solution.vectors_local, descriptor, spin_type);
+                }
+
+                continue;
+            }
             //7. Redistribute the eigenvectors to the BSE grid and write the results to disk.
-            ChannelResults channel;
+            ChannelSolution channel;
+            auto channel_memory = watch_memory("channel", channel);
             channel.spin_type = spin_type;
             channel.energies = solution.energies_ry;
             {
                 ScopedTimer timer(global::profiler,
                                   "redistribute_tda_eigenvectors",
-                                  "Redistribute TDA eigenvectors");
+                                  "Redistribute TDA eigenvectors", dataset->comm_h.comm);
                 channel.amplitudes_x = redistribute_amplitudes(
                     dataset->comm_h.comm, solution.vectors_local, descriptor,
                     0, 0, dimension, nstates);
             }
-            if (rank == 0)
             {
                 ScopedTimer timer(global::profiler, "write_tda_results",
-                                  "Write TDA eigenstates");
-                write_energies(energy_file(options, spin_type, false),
-                               channel.energies);
-                std::cout << std::setprecision(10)
-                          << spin_type << " TDA lowest excitation (eV): "
-                          << channel.energies.front()
-                                 * PARAM.constants.ry_to_ev << '\n'
-                          << spin_type << " TDA binding energy (eV): "
-                          << (qp.direct_gap_ry - channel.energies.front())
-                                 * PARAM.constants.ry_to_ev << '\n';
+                                  "Write TDA eigenstates", dataset->comm_h.comm);
+                if (rank == 0)
+                {
+                    write_energies(energy_file(options, spin_type, false),
+                                   channel.energies);
+                    std::cout << std::setprecision(10)
+                              << spin_type << " TDA lowest excitation (eV): "
+                              << channel.energies.front()
+                                     * PARAM.constants.ry_to_ev << '\n'
+                              << spin_type << " TDA binding energy (eV): "
+                              << (qp.direct_gap_ry - channel.energies.front())
+                                     * PARAM.constants.ry_to_ev << '\n';
+                }
             }
             if (options.out_bse_eigenvectors)
             {
                 ScopedTimer timer(global::profiler,
                                   "write_tda_amplitudes",
-                                  "Write distributed TDA amplitudes");
+                                  "Write distributed TDA amplitudes", dataset->comm_h.comm);
                 write_distributed_amplitudes(
                     amplitude_file(options, spin_type, "", rank),
                     channel.amplitudes_x);
             }
-            done("write TDA states " + spin_type, dataset->comm_h.comm);
-            tda_results.push_back(std::move(channel));
+
+            tda_solutions.push_back(std::move(channel));
         }
     }
     // full BSE calculation
@@ -600,27 +650,27 @@ void run_bse(const InputParameters &options,
             const auto channel_coefficients =
                 interaction_coefficients(spin_type);
             std::vector<Complex> matrix_a;
+            auto matrix_a_memory = watch_memory("matrix_a", matrix_a);
             std::vector<Complex> matrix_b(local_size, Complex{});
+            auto matrix_b_memory = libbse::watch_memory("bse_calculation.matrix_b", matrix_b);
             {
                 ScopedTimer timer(global::profiler, "assemble_full_a_matrix",
-                                  "Assemble channel full-BSE A matrix");
+                                  "Assemble channel full-BSE A matrix", dataset->comm_h.comm);
                 assemble_channel_matrix(
                     matrix_a, descriptor, qp, options, channel_coefficients,
                     hartree_a, screened_a);
             }
             {
                 ScopedTimer timer(global::profiler, "check_full_a_matrix",
-                                  "Check full-BSE A-matrix Hermiticity");
+                                  "Check full-BSE A-matrix Hermiticity", dataset->comm_h.comm);
                 check_hermitian(
                     matrix_a, descriptor,
                     PARAM.constants.matrix_symmetry_threshold);
             }
-            done("initialize and check " + spin_type + " full-BSE A matrix",
-                 dataset->comm_h.comm);
 
             {
                 ScopedTimer timer(global::profiler, "assemble_full_b_matrix",
-                                  "Assemble channel full-BSE B matrix");
+                                  "Assemble channel full-BSE B matrix", dataset->comm_h.comm);
                 for (std::size_t index = 0; index < local_size; ++index)
                 {
                     if (channel_coefficients.hartree != 0.0)
@@ -633,35 +683,34 @@ void run_bse(const InputParameters &options,
             }
             {
                 ScopedTimer timer(global::profiler, "check_full_b_matrix",
-                                  "Check full-BSE B-matrix symmetry");
+                                  "Check full-BSE B-matrix symmetry", dataset->comm_h.comm);
                 check_symmetric(
                     matrix_b, descriptor,
                     PARAM.constants.matrix_symmetry_threshold);
             }
-            done("initialize and check " + spin_type + " full-BSE B matrix",
-                 dataset->comm_h.comm);
+
             if (rank == 0)
                 std::cout << "Diagonalizing " << spin_type
                           << " full BSE Hamiltonian with ELPA...\n";
             EigenSolution solution;
+            auto solution_memory = watch_memory("solution", solution);
             {
                 ScopedTimer timer(global::profiler, "solve_full_elpa",
-                                  "Solve full BSE with ELPA");
+                                  "Solve full BSE with ELPA", dataset->comm_h.comm);
                 // The full BSE Hamiltonian is NOT Hermitian AND not positive definite, so we use the generalized eigenvalue solver.
                 solution = solve_full_elpa(
                     matrix_a, matrix_b, descriptor, full_descriptor,
                     options.bse_nstates);
             }
-            done("solve " + spin_type + " full BSE with ELPA",
-                 dataset->comm_h.comm);
 
-            ChannelResults channel;
+            ChannelSolution channel;
+            auto channel_memory = watch_memory("channel", channel);
             channel.spin_type = spin_type;
             channel.energies = solution.energies_ry;
             {
                 ScopedTimer timer(global::profiler,
                                   "redistribute_full_eigenvectors",
-                                  "Redistribute full-BSE eigenvectors");
+                                  "Redistribute full-BSE eigenvectors", dataset->comm_h.comm);
                 channel.amplitudes_x = redistribute_amplitudes(
                     dataset->comm_h.comm, solution.vectors_local,
                     full_descriptor, 0, dimension, dimension, nstates);
@@ -670,25 +719,27 @@ void run_bse(const InputParameters &options,
                     full_descriptor, dimension, dimension,
                     dimension, nstates);
             }
-            if (rank == 0)
             {
                 ScopedTimer timer(global::profiler, "write_full_results",
-                                  "Write full-BSE eigenstates");
-                write_energies(energy_file(options, spin_type, true),
-                               channel.energies);
-                std::cout << std::setprecision(10)
-                          << spin_type << " full-BSE lowest excitation (eV): "
-                          << channel.energies.front()
-                                 * PARAM.constants.ry_to_ev << '\n'
-                          << spin_type << " full-BSE binding energy (eV): "
-                          << (qp.direct_gap_ry - channel.energies.front())
-                                 * PARAM.constants.ry_to_ev << '\n';
+                                  "Write full-BSE eigenstates", dataset->comm_h.comm);
+                if (rank == 0)
+                {
+                    write_energies(energy_file(options, spin_type, true),
+                                   channel.energies);
+                    std::cout << std::setprecision(10)
+                              << spin_type << " full-BSE lowest excitation (eV): "
+                              << channel.energies.front()
+                                     * PARAM.constants.ry_to_ev << '\n'
+                              << spin_type << " full-BSE binding energy (eV): "
+                              << (qp.direct_gap_ry - channel.energies.front())
+                                     * PARAM.constants.ry_to_ev << '\n';
+                }
             }
             if (options.out_bse_eigenvectors)
             {
                 ScopedTimer timer(global::profiler,
                                   "write_full_amplitudes",
-                                  "Write distributed full-BSE amplitudes");
+                                  "Write distributed full-BSE amplitudes", dataset->comm_h.comm);
                 write_distributed_amplitudes(
                     amplitude_file(options, spin_type, "full_X_", rank),
                     channel.amplitudes_x);
@@ -696,49 +747,45 @@ void run_bse(const InputParameters &options,
                     amplitude_file(options, spin_type, "full_Y_", rank),
                     channel.amplitudes_y);
             }
-            done("write full-BSE states " + spin_type,
-                 dataset->comm_h.comm);
-            full_results.push_back(std::move(channel));
+
+            full_solutions.push_back(std::move(channel));
         }
     }
 
+    if (tda_solutions.empty() && full_solutions.empty()) return;
     if (rank == 0)
         std::cout << "Preparing fine-grid velocity_mo for velocity gauge...\n";
-    const auto velocity = [&]()
+    FineVelocityMo velocity;
+    auto velocity_memory = watch_memory("velocity", velocity);
     {
         ScopedTimer timer(global::profiler, "prepare_velocity_mo",
-                          "Prepare fine-grid velocity_mo");
-        return prepare_fine_velocity_mo(
+                          "Prepare fine-grid velocity_mo", dataset->comm_h.comm);
+        velocity = prepare_fine_velocity_mo(
             options, qp, dataset, band_gauge_phases);
-    }();
-    done("prepare velocity matrix in MO representation",
-         dataset->comm_h.comm);
+    }
 
-    for (const ChannelResults &channel : tda_results)
+    for (const ChannelSolution &channel : tda_solutions)
     {
         {
             ScopedTimer timer(global::profiler, "tda_spectrum",
-                              "Calculate TDA velocity-gauge spectrum");
+                              "Calculate TDA velocity-gauge spectrum", dataset->comm_h.comm);
             write_velocity_gauge_outputs(
                 options, *dataset, velocity, channel.energies,
                 channel.amplitudes_x, nullptr, channel.spin_type, "tda");
         }
-        done("calculate TDA velocity-gauge spectrum " + channel.spin_type,
-             dataset->comm_h.comm);
+
     }
-    for (const ChannelResults &channel : full_results)
+    for (const ChannelSolution &channel : full_solutions)
     {
         {
             ScopedTimer timer(global::profiler, "full_spectrum",
-                              "Calculate full-BSE velocity-gauge spectrum");
+                              "Calculate full-BSE velocity-gauge spectrum", dataset->comm_h.comm);
             write_velocity_gauge_outputs(
                 options, *dataset, velocity, channel.energies,
                 channel.amplitudes_x, &channel.amplitudes_y,
                 channel.spin_type, "full");
         }
-        done("calculate full-BSE velocity-gauge spectrum "
-                 + channel.spin_type,
-             dataset->comm_h.comm);
+
     }
 }
 

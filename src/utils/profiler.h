@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <mpi.h>
 #include <cstddef>
 #include <ctime>
 #include <iosfwd>
@@ -57,7 +58,10 @@ class Profiler
 class ScopedTimer
 {
   public:
-    ScopedTimer(Profiler &profiler, std::string name, std::string note = {});
+    // A non-null communicator requires matching scopes on every member rank.
+    // The default is local, safe for rank-only work and non-MPI unit tests.
+    ScopedTimer(Profiler &profiler, std::string name, std::string note = {},
+                MPI_Comm comm = MPI_COMM_NULL);
     ~ScopedTimer();
 
     ScopedTimer(const ScopedTimer &) = delete;
@@ -66,6 +70,9 @@ class ScopedTimer
   private:
     Profiler *profiler_;
     std::string name_;
+    std::string note_;
+    MPI_Comm comm_;
+    int uncaught_;
 };
 
 namespace global

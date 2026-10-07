@@ -1,3 +1,4 @@
+#include "utils/memory_views.h"
 #include "matrix_checks.h"
 
 #include "interface/librpa_api.h"
@@ -15,7 +16,7 @@ namespace libbse
 namespace
 {
 
-MatrixCheckResult check_matrix(const std::vector<Complex> &matrix,
+MatrixCheckSolution check_matrix(const std::vector<Complex> &matrix,
                                const librpa_int::ArrayDesc &descriptor,
                                double threshold, bool conjugate)
 {
@@ -35,6 +36,7 @@ MatrixCheckResult check_matrix(const std::vector<Complex> &matrix,
                   << local_size << " local elements; use more MPI processes.\n";
 
     std::vector<Complex> transposed(local_size);
+    auto transposed_memory = libbse::watch_memory("matrix_checks.transposed", transposed);
     if (conjugate)
         LibRPA_API::distributed_conjugate_transpose(
             descriptor.m(), descriptor.n(), matrix.data(), descriptor,
@@ -68,7 +70,7 @@ MatrixCheckResult check_matrix(const std::vector<Complex> &matrix,
     MPI_Allreduce(&local_flag, &global_flag, 1, MPI_INT, MPI_LAND,
                   descriptor.comm());
 
-    MatrixCheckResult result;
+    MatrixCheckSolution result;
     result.passed = global_flag != 0;
     result.difference_norm = std::sqrt(norms[0]);
     result.sum_norm = std::sqrt(norms[1]);
@@ -101,14 +103,14 @@ MatrixCheckResult check_matrix(const std::vector<Complex> &matrix,
 
 } // namespace
 
-MatrixCheckResult check_hermitian(
+MatrixCheckSolution check_hermitian(
     const std::vector<Complex> &matrix,
     const librpa_int::ArrayDesc &descriptor, double threshold)
 {
     return check_matrix(matrix, descriptor, threshold, true);
 }
 
-MatrixCheckResult check_symmetric(
+MatrixCheckSolution check_symmetric(
     const std::vector<Complex> &matrix,
     const librpa_int::ArrayDesc &descriptor, double threshold)
 {

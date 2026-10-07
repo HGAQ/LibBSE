@@ -1,4 +1,5 @@
 #pragma once
+#include "utils/memory.h"
 
 #include "bse_types.h"
 #include "molecular_lri_comm.h"
@@ -58,6 +59,9 @@ public:
     void release_interactions();
 
 private:
+    void add_batched(std::vector<Complex> &matrix,
+                     const librpa_int::ArrayDesc &descriptor,
+                     double coefficient, bool hartree, bool is_a);
     void build_exact_q_map();
     void build_wavefunctions();
 
@@ -68,6 +72,7 @@ private:
     int pair_dimension_ = 0;
     RI::LR<int, int, 3, Complex> lr_;
     std::ofstream log_;
+    std::unique_ptr<MemoryWatch> memory_;
 };
 
 } // namespace libbse

@@ -207,6 +207,10 @@ void Parameter::parse(const std::string &contents, const fs::path &base_director
     if (auto value = take("bse_plasma_energy_ev"); !value.empty()) inp.bse_plasma_energy_ev = parse_double("bse_plasma_energy_ev", value);
     if (auto value = take("screened_dir"); !value.empty())
         inp.screened_dir = value;
+    if (auto value = take("bse_memory_optimized"); !value.empty())
+        inp.bse_memory_optimized = parse_boolean("bse_memory_optimized", value);
+    if (auto value = take("bse_ri_batch_blocks"); !value.empty())
+        inp.bse_ri_batch_blocks = parse_integer("bse_ri_batch_blocks", value);
     if (auto value = take("bse_nstates"); !value.empty())
         inp.bse_nstates = parse_integer("bse_nstates", value);
     if (auto value = take("nocc"); !value.empty()) inp.nocc = parse_integer("nocc", value);
@@ -270,6 +274,8 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
     if (inp.bse_plasma_energy_ev > 0 && (inp.screened_format.find("chi0") == std::string::npos
         || inp.bse_tda != "tda" || inp.bse_solver != "elpa"))
         throw std::invalid_argument("effective dynamical BSE requires a chi0 input, bse_tda tda and bse_solver elpa");
+    if (inp.bse_ri_batch_blocks < 0)
+        throw std::invalid_argument("bse_ri_batch_blocks must be nonnegative");
     inp.bse_solver = lower(trim(inp.bse_solver));
     for (std::string &spin_type : inp.bse_spin_types)
         spin_type = lower(trim(spin_type));
@@ -361,6 +367,7 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
 void Parameter::print(std::ostream &output) const
 {
     output << "LibBSE input parameters\n"
+           << "==================================================\n" 
            << "  input_dir: " << inp.input_dir << '\n'
            << "  output_dir: " << inp.output_dir << '\n'
            << "  input_format: " << inp.input_format << '\n'
@@ -371,6 +378,8 @@ void Parameter::print(std::ostream &output) const
            << "  chi0_headwing: " << inp.chi0_headwing << '\n'
            << "  bse_plasma_energy_ev: " << inp.bse_plasma_energy_ev << '\n'
            << "  screened_dir: " << inp.screened_dir << '\n'
+           << "  bse_memory_optimized: " << inp.bse_memory_optimized << '\n'
+           << "  bse_ri_batch_blocks: " << inp.bse_ri_batch_blocks << '\n'
            << "  bse_nstates: " << inp.bse_nstates << '\n'
            << "  nocc: " << inp.nocc << '\n'
            << "  nvirt: " << inp.nvirt << '\n'

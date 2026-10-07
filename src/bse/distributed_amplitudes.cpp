@@ -1,3 +1,4 @@
+#include "utils/memory_views.h"
 #include "distributed_amplitudes.h"
 
 #include "parameter/parameter.h"
@@ -69,6 +70,7 @@ DistributedAmplitudes make_distributed_amplitudes(
     const PairPartition partition = pair_partition(dimension, mpi_size, rank);
 
     DistributedAmplitudes result;
+    auto result_memory = watch_memory("distributed_amplitudes.result", result);
     result.dimension = dimension;
     result.nstates = nstates;
     result.first_pair = partition.first;
@@ -114,7 +116,9 @@ DistributedAmplitudes redistribute_amplitudes(
         int source_row, destination, pair, destination_pairs;
     };
     std::vector<Row> rows;
+    auto rows_memory = libbse::watch_memory("distributed_amplitudes.rows", rows);
     std::vector<int> rows_per_destination(mpi_size, 0);
+    auto rows_per_destination_memory = libbse::watch_memory("distributed_amplitudes.rows_per_destination", rows_per_destination);
     for (int row = 0; row < source_descriptor.m_loc(); ++row)
     {
         const int global_row = source_descriptor.indx_l2g_r(row);
@@ -129,6 +133,7 @@ DistributedAmplitudes redistribute_amplitudes(
     // The descriptor's local-to-global column mapping is monotone. Cache it
     // once; each local column is packed in exactly one batch.
     std::vector<std::pair<int, int>> columns;
+    auto columns_memory = libbse::watch_memory("distributed_amplitudes.columns", columns);
     for (int column = 0; column < source_descriptor.n_loc(); ++column)
     {
         const int state = source_descriptor.indx_l2g_c(column) - column_offset;
@@ -150,13 +155,24 @@ DistributedAmplitudes redistribute_amplitudes(
                   << " states/batch, " << max_batch_elements
                   << " elements/rank exchange limit\n";
     auto result = make_distributed_amplitudes(comm, dimension, nstates);
+    auto result_memory = watch_memory("distributed_amplitudes.result", result);
     std::vector<int> send_counts(mpi_size), receive_counts(mpi_size);
+    auto send_counts_memory = libbse::watch_memory("distributed_amplitudes.send_counts", send_counts);
+    auto receive_counts_memory = libbse::watch_memory("distributed_amplitudes.receive_counts", receive_counts);
     std::vector<int> send_offsets(mpi_size), receive_offsets(mpi_size), cursor(mpi_size);
+    auto send_offsets_memory = libbse::watch_memory("distributed_amplitudes.send_offsets", send_offsets);
+    auto receive_offsets_memory = libbse::watch_memory("distributed_amplitudes.receive_offsets", receive_offsets);
+    auto cursor_memory = libbse::watch_memory("distributed_amplitudes.cursor", cursor);
     // Flat batch buffers avoid the old all-state per-destination vectors and
     // their extra flattened copies. Capacity is reused, bounded by the budget.
     std::vector<std::uint64_t> send_indices, receive_indices;
+    auto send_indices_memory = libbse::watch_memory("distributed_amplitudes.send_indices", send_indices);
+    auto receive_indices_memory = libbse::watch_memory("distributed_amplitudes.receive_indices", receive_indices);
     std::vector<Complex> send_values, receive_values;
+    auto send_values_memory = libbse::watch_memory("distributed_amplitudes.send_values", send_values);
+    auto receive_values_memory = libbse::watch_memory("distributed_amplitudes.receive_values", receive_values);
     std::vector<unsigned char> assigned;
+    auto assigned_memory = libbse::watch_memory("distributed_amplitudes.assigned", assigned);
     // Reserve proven maxima once: vector growth must not double capacity past
     // the exchange budget when column ownership changes between batches.
     const auto max_send = std::min(static_cast<std::size_t>(batch_states), columns.size())
@@ -286,6 +302,7 @@ DistributedAmplitudes read_distributed_amplitudes(
     MPI_Comm comm, int dimension, int nstates)
 {
     auto result = make_distributed_amplitudes(comm, dimension, nstates);
+    auto result_memory = watch_memory("distributed_amplitudes.result", result);
     std::ifstream input(file);
     if (!input) throw std::runtime_error("cannot read " + file.string());
     for (Complex &value : result.values)

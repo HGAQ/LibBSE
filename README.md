@@ -387,3 +387,36 @@ restart calculations are expected to use the same number of MPI ranks as the
 ELPA calculation that produced these files.
 
 The unit-test inventory is documented in [`tests/README.md`](tests/README.md).
+
+### TDA memory optimization
+
+`bse_memory_optimized true` (default) releases the separate Hartree/screened matrices after assembly for static, single-channel TDA, and releases the overwritten input matrix after diagonalization. The transition space, requested states and numerical precision are unchanged.
+
+With `out_bse_eigenvectors false`, optical spectra, momenta and transition analysis are contracted on ELPA's block-cyclic eigenvectors. Only O(D) velocity/gap vectors are replicated, avoiding a second O(D²) eigenvector array. Explicit eigenvector output retains the redistribution/restart path. Dynamic kernels, multiple spin channels and full BSE keep interactions required by later consumers.
+
+`bse_ri_batch_blocks 64` bounds the number of generated k-pair result blocks per rank and batch, followed immediately by accumulation into the BLACS matrix. This is not a total-memory cap: thread temporaries, communication buffers and solver workspaces are additional. Smaller batches can repeat Fourier work and communication. Use 0 to disable only RI batching, or `bse_memory_optimized false` for a same-version legacy comparison.
+
+### Timing and partial memory accounting
+
+`ScopedTimer` prints elapsed wall/CPU time and the current explicitly tracked
+array payload at scope exit. Pass the stage communicator as its fourth argument
+only when **every member rank enters the same scopes in the same order**. A
+local timer (the default `MPI_COMM_NULL`) performs no collective. Rank-local
+exceptions skip destructor collectives; the MPI driver aborts on errors.
+
+Memory reports use decimal MB (1,000,000 bytes), show task minima/maxima/averages,
+and end with the summed live residual, per-task observed peaks and largest
+tracked array, including allocation labels. Shared RI/LibRPA buffers are counted
+once per task; vector capacity is retained after `clear()`. Major input, RI,
+screening, Hamiltonian, eigenvector, redistribution and optical buffers are
+registered. This is **partial payload accounting, not process RSS**: container
+nodes, allocator overhead, expression temporaries and ELPA/BLAS/MPI/internal
+LibRPA workspaces are not fully covered. Peaks are sampled at explicit
+allocation/resize checkpoints and stage boundaries, so transient allocations
+between checkpoints can be missed.
+
+For a new owner, declare `auto memory = watch_memory("array_name", array);`
+**after** the array and keep the guard alive as long as the owner is in use.
+Call `MemoryTracker::instance().checkpoint()` after a major resize and before
+releasing transient storage. Keep registrations/checkpoints on the control
+thread. Never reset accounting to manufacture a zero final residual.

@@ -1,3 +1,4 @@
+#include "utils/memory_views.h"
 #include "elpa_solver.h"
 #include "interface/librpa_api.h"
 
@@ -97,9 +98,11 @@ EigenSolution solve_tda_elpa(std::vector<Complex> &matrix,
     const auto handle = make_elpa_handle(descriptor, nstates);
 
     EigenSolution result;
+    auto result_memory = watch_memory("elpa_solver.result", result);
     result.energies_ry.resize(static_cast<std::size_t>(dimension));
     result.vectors_local.resize(static_cast<std::size_t>(descriptor.lld())
                                 * descriptor.n_loc());
+    MemoryTracker::instance().checkpoint();
     elpa_eigenvectors(handle, matrix.data(), result.energies_ry.data(),
                       result.vectors_local.data(), &status);
     check_elpa(status, "TDA eigenvectors");
@@ -136,7 +139,9 @@ EigenSolution solve_full_elpa(std::vector<Complex> &matrix_a,
     const std::size_t full_local_size = static_cast<std::size_t>(full_descriptor.lld())
                                         * full_descriptor.n_loc();
     std::vector<double> matrix_m(full_local_size, 0.0);
+    auto matrix_m_memory = libbse::watch_memory("elpa_solver.matrix_m", matrix_m);
     std::vector<double> temporary(pair_local_size, 0.0);
+    auto temporary_memory = libbse::watch_memory("elpa_solver.temporary", temporary);
     fill_pair_block(matrix_a, matrix_b, pair_descriptor, temporary,
                     [](Complex a, Complex b) { return a.real() + b.real(); });
     copy_pair_block(temporary, pair_descriptor, matrix_m, full_descriptor, 1, 1);
@@ -152,15 +157,19 @@ EigenSolution solve_full_elpa(std::vector<Complex> &matrix_a,
                     [](Complex a, Complex b) { return a.real() - b.real(); });
     copy_pair_block(temporary, pair_descriptor, matrix_m, full_descriptor,
                     pair_dimension + 1, pair_dimension + 1);
+    libbse::MemoryTracker::instance().checkpoint();
     matrix_a.clear();
+    libbse::MemoryTracker::instance().checkpoint();
     matrix_b.clear();
     matrix_a.shrink_to_fit();
     matrix_b.shrink_to_fit();
+    libbse::MemoryTracker::instance().checkpoint();
     temporary.clear();
     temporary.shrink_to_fit();
 
     // Symplectic metric J = {{0,I},{-I,0}}.
     std::vector<double> matrix_j(full_local_size, 0.0);
+    auto matrix_j_memory = libbse::watch_memory("elpa_solver.matrix_j", matrix_j);
 #pragma omp parallel for schedule(static)
     for (int column = 0; column < full_descriptor.n_loc(); ++column)
     {
@@ -182,6 +191,7 @@ EigenSolution solve_full_elpa(std::vector<Complex> &matrix_a,
 
     // matrix_m is the upper-triangular Cholesky factor U. Form U J U^T.
     std::vector<double> uj(full_local_size, 0.0);
+    auto uj_memory = libbse::watch_memory("elpa_solver.uj", uj);
     LibRPA_API::multiply('N', 'N', full_dimension, full_dimension,
                          full_dimension, 1.0, matrix_m.data(), full_descriptor,
                          matrix_j.data(), full_descriptor, 0.0, uj.data(),
@@ -190,15 +200,19 @@ EigenSolution solve_full_elpa(std::vector<Complex> &matrix_a,
                          full_dimension, 1.0, uj.data(), full_descriptor,
                          matrix_m.data(), full_descriptor, 0.0, matrix_j.data(),
                          full_descriptor);
+    libbse::MemoryTracker::instance().checkpoint();
     uj.clear();
     uj.shrink_to_fit();
 
     std::vector<double> all_energies(static_cast<std::size_t>(full_dimension));
+    auto all_energies_memory = libbse::watch_memory("elpa_solver.all_energies", all_energies);
     // ELPA stores real and imaginary parts of skew eigenvectors in two planes.
     std::vector<double> skew_vectors(2 * full_local_size, 0.0);
+    auto skew_vectors_memory = libbse::watch_memory("elpa_solver.skew_vectors", skew_vectors);
     elpa_skew_eigenvectors(handle, matrix_j.data(), all_energies.data(),
                            skew_vectors.data(), &status);
     check_elpa(status, "full-BSE skew eigenvectors");
+    libbse::MemoryTracker::instance().checkpoint();
     matrix_j.clear();
     matrix_j.shrink_to_fit();
 
@@ -219,7 +233,9 @@ EigenSolution solve_full_elpa(std::vector<Complex> &matrix_a,
     }
 
     std::vector<double> lz_real(full_local_size, 0.0);
+    auto lz_real_memory = libbse::watch_memory("elpa_solver.lz_real", lz_real);
     std::vector<double> lz_imag(full_local_size, 0.0);
+    auto lz_imag_memory = libbse::watch_memory("elpa_solver.lz_imag", lz_imag);
     LibRPA_API::multiply('T', 'N', full_dimension, full_dimension,
                          full_dimension, 1.0, matrix_m.data(), full_descriptor,
                          skew_vectors.data(), full_descriptor, 0.0,
@@ -228,22 +244,28 @@ EigenSolution solve_full_elpa(std::vector<Complex> &matrix_a,
                          full_dimension, 1.0, matrix_m.data(), full_descriptor,
                          skew_vectors.data() + full_local_size, full_descriptor,
                          0.0, lz_imag.data(), full_descriptor);
+    libbse::MemoryTracker::instance().checkpoint();
     matrix_m.clear();
     matrix_m.shrink_to_fit();
+    libbse::MemoryTracker::instance().checkpoint();
     skew_vectors.clear();
     skew_vectors.shrink_to_fit();
 
     std::vector<Complex> lz(full_local_size);
+    auto lz_memory = libbse::watch_memory("elpa_solver.lz", lz);
 #pragma omp parallel for schedule(static)
     for (std::size_t index = 0; index < full_local_size; ++index)
         lz[index] = Complex(lz_real[index], lz_imag[index]);
+    libbse::MemoryTracker::instance().checkpoint();
     lz_real.clear();
+    libbse::MemoryTracker::instance().checkpoint();
     lz_imag.clear();
     lz_real.shrink_to_fit();
     lz_imag.shrink_to_fit();
 
     // Q = {{I,-iI},{-I,-iI}} / sqrt(2), then v = Q L z |Omega|^-1/2.
     std::vector<Complex> q(full_local_size, Complex{});
+    auto q_memory = libbse::watch_memory("elpa_solver.q", q);
     const double inv_sqrt_two = 1.0 / std::sqrt(2.0);
 #pragma omp parallel for schedule(static)
     for (int column = 0; column < full_descriptor.n_loc(); ++column)
@@ -266,7 +288,9 @@ EigenSolution solve_full_elpa(std::vector<Complex> &matrix_a,
     }
 
     EigenSolution result;
+    auto result_memory = watch_memory("elpa_solver.result", result);
     result.vectors_local.resize(full_local_size);
+    MemoryTracker::instance().checkpoint();
     LibRPA_API::multiply('N', 'N', full_dimension, full_dimension,
                          full_dimension, Complex(1.0), q.data(), full_descriptor,
                          lz.data(), full_descriptor, Complex(0.0),

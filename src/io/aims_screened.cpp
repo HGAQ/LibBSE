@@ -1,3 +1,4 @@
+#include "utils/memory_views.h"
 #include "aims_screened.h"
 #include "interface/librpa_api.h"
 #include "chi0_screening.h"
@@ -110,6 +111,7 @@ TensorMap<Complex> read_aims_screened_interaction(
     // Never treat a general space-group star as a q/-q pair: request full-BZ
     // (symmetry none) or inversion-only aims output if another q is missing.
     auto pbc = dataset.pbc;
+    libbse::MemoryTracker::instance().checkpoint();
     pbc.map_irk_ks.clear();
     int restored = 0;
     for (int iq = 0; iq < static_cast<int>(grid.size()); ++iq) {
@@ -126,6 +128,7 @@ TensorMap<Complex> read_aims_screened_interaction(
     }
 
     LibRPA_API::ScreenedQBlocks wq;
+    auto wq_memory = watch_memory("aims_screening.Wq", wq);
     double selected_omega = std::numeric_limits<double>::quiet_NaN();
     const std::size_t naux = dataset.basis_aux.nb_total;
     for (auto &[iq, paths] : files) {
@@ -145,7 +148,9 @@ TensorMap<Complex> read_aims_screened_interaction(
             throw std::runtime_error("aims W lowest frequencies differ between q points");
         selected_omega = node.second;
         std::vector<Complex> matrix(naux * naux);
+        auto matrix_memory = libbse::watch_memory("aims_screened.matrix", matrix);
         std::vector<unsigned char> seen(naux * naux, 0);
+        auto seen_memory = libbse::watch_memory("aims_screened.seen", seen);
         std::size_t count = 0;
         for (const auto &path : paths) {
             std::ifstream in(path); std::string line;
@@ -167,6 +172,7 @@ TensorMap<Complex> read_aims_screened_interaction(
         if (count != naux * naux) throw std::runtime_error("missing aims W rank block/entries at q " + std::to_string(headers.at(iq).iq));
         if (quantity == "chi0") {
             librpa_int::Matz chi(naux, naux, librpa_int::MAJOR::ROW);
+            auto chi_memory = watch_memory("aims_screening.chi0", chi);
             std::copy(matrix.begin(), matrix.end(), chi.ptr());
             const auto screened = screening->screen(chi, grid[iq] * pbc.G, selected_omega);
             std::copy_n(screened.ptr(), matrix.size(), matrix.begin());

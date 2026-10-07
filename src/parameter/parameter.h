@@ -44,6 +44,9 @@ struct InputParameters
     // from the lowest STATIC excitation and the minimum direct QP transition.
     // Other states are eigenstates of this same target-exciton kernel.
     double bse_plasma_energy_ev = 0.0;
+    // Storage/scheduling controls only: do not change the transition space.
+    bool bse_memory_optimized = true;
+    int bse_ri_batch_blocks = 64; // maximum returned k-pair blocks/rank; 0 = legacy
     int bse_nstates = -1;
     int nocc = 4;
     int nvirt = 4;
