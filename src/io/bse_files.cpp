@@ -10,6 +10,8 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -177,8 +179,8 @@ fs::path data_file(const InputParameters &options, const char *default_name)
     return fs::is_directory(path) ? path / default_name : path;
 }
 
-QuasiparticleBands read_fine_qp_bands(const InputParameters &options,
-                                      const librpa_int::Dataset &dataset)
+QuasiparticleBands read_qp_band_table(const InputParameters &options,
+                                     const librpa_int::Dataset &dataset)
 {
     const fs::path file = data_file(options, "GW_band_spin_1.dat");
     std::ifstream input(file);
@@ -213,13 +215,13 @@ QuasiparticleBands read_fine_qp_bands(const InputParameters &options,
                              PARAM.constants.band_file_kpoint_tolerance);
 }
 
-QuasiparticleBands read_coarse_qp_bands(const InputParameters &options,
-                                        const librpa_int::Dataset &dataset)
+QuasiparticleBands read_energy_qp_blocks(const InputParameters &options,
+                                       const librpa_int::Dataset &dataset)
 {
     const fs::path file = data_file(options, "energy_qp");
     std::ifstream input(file);
     if (!input)
-        throw std::runtime_error("cannot open coarse-grid quasiparticle file: "
+        throw std::runtime_error("cannot open energy_qp file: "
                                  + file.string());
 
     std::vector<QpRecord> records;
@@ -314,14 +316,50 @@ QuasiparticleBands read_qp_bands(const InputParameters &options,
                 "are intentionally unsupported");
     }
     QuasiparticleBands result;
+    int rank = 0;
+    MPI_Comm_rank(dataset.comm_h.comm, &rank);
     if (format == "energy_qp")
-        result = read_coarse_qp_bands(options, dataset);
+    {
+        if (rank == 0)
+            std::cout << "Reading quasiparticle data (energy_qp) from "
+                      << data_file(options, "energy_qp").string() << '\n';
+        result = read_energy_qp_blocks(options, dataset);
+    }
     else if (format == "fine_band")
-        result = read_fine_qp_bands(options, dataset);
+    {
+        if (rank == 0)
+            std::cout << "Reading quasiparticle data (fine_band) from "
+                      << data_file(options, "GW_band_spin_1.dat").string() << '\n';
+        result = read_qp_band_table(options, dataset);
+    }
     else
         throw std::invalid_argument("unsupported quasiparticle format: "
                                     + format);
     calculate_gaps(result, options);
+    if (rank == 0)
+    {
+        const auto flags = std::cout.flags();
+        const auto precision = std::cout.precision();
+        std::cout << "Read QP energies selected for BSE (eV)\n"
+                  << std::right << std::fixed;
+        for (int ik = 0; ik < result.nk; ++ik)
+        {
+            const auto &k = dataset.kfrac_band_list[static_cast<std::size_t>(ik)];
+            std::cout << "  K_point " << ik + 1 << " : "
+                      << std::setprecision(8)
+                      << k.x << ' ' << k.y << ' ' << k.z << '\n'
+                      << "      Band           QP_energy(eV)\n";
+            const auto offset = static_cast<std::size_t>(ik) * result.nbands;
+            for (int ib = 0; ib < result.nbands; ++ib)
+                std::cout << std::setw(10) << result.ncore + ib + 1
+                          << std::setw(24) << std::setprecision(12)
+                          << result.energies_ry[offset + ib] * PARAM.constants.ry_to_ev
+                          << '\n';
+        }
+        std::cout << '\n';
+        std::cout.flags(flags);
+        std::cout.precision(precision);
+    }
     return result;
 }
 

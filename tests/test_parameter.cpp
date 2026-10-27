@@ -138,6 +138,11 @@ void test_invalid_or_unsupported_parameters_are_rejected()
     require(rejected("bse_spin_types rpa\nbse_ri_hartree 0\n"),
             "RPA without the available LibRI Hartree path was not rejected");
     require(rejected("unknown_parameter 1\n"), "unknown parameter was not rejected");
+    for (const std::string &removed_option : {"bse_head_treatment none",
+             "bse_head_fine_reference_file cache", "bse_head_direction_file charge",
+             "bse_head_eta_scale 1", "bse_exchange_gamma_file gamma",
+             "bse_fixed_operator_dir cache", "out_fixed_operators false"})
+        require(rejected(removed_option + "\n"), "removed diagnostic option was accepted");
     require(rejected("bse_ri_batch_blocks -1\n"), "negative RI batch was not rejected");
     require(rejected("bse_memory_optimized unknown\n"), "malformed memory flag was not rejected");
     require(rejected("bse_nstates zero\n"), "malformed integer was not rejected");

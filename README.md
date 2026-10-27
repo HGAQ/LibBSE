@@ -420,3 +420,10 @@ For a new owner, declare `auto memory = watch_memory("array_name", array);`
 Call `MemoryTracker::instance().checkpoint()` after a major resize and before
 releasing transient storage. Keep registrations/checkpoints on the control
 thread. Never reset accounting to manufacture a zero final residual.
+
+### W interpolation and binary cache
+
+Uniform fine-grid transfer-q canonicalization is automatic. Even-grid endpoint
+averaging is optional (`bse_w_boundary_average`, default false). Static full W
+can be read with `screened_format full_w_binary`. See the
+[usage and cache format guide (Chinese)](docs/w_interpolation_and_cache.md).

@@ -203,6 +203,7 @@ void Parameter::parse(const std::string &contents, const fs::path &base_director
         inp.screened_format = lower(value);
     if (auto value = take("chi0_coulomb_metric"); !value.empty()) inp.chi0_coulomb_metric = lower(value);
     if (auto value = take("out_screening_matrices"); !value.empty()) inp.out_screening_matrices = parse_boolean("out_screening_matrices", value);
+    if (auto value = take("bse_w_boundary_average"); !value.empty()) inp.bse_w_boundary_average = parse_boolean("bse_w_boundary_average", value);
     if (auto value = take("chi0_headwing"); !value.empty()) inp.chi0_headwing = parse_boolean("chi0_headwing", value);
     if (auto value = take("bse_plasma_energy_ev"); !value.empty()) inp.bse_plasma_energy_ev = parse_double("bse_plasma_energy_ev", value);
     if (auto value = take("screened_dir"); !value.empty())
@@ -263,8 +264,11 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
     inp.screened_dir = trim(inp.screened_dir);
     inp.screened_format = lower(trim(inp.screened_format));
     if (inp.screened_format != "librpa_wc" && inp.screened_format != "fhi_aims_w"
-        && inp.screened_format != "fhi_aims_chi0" && inp.screened_format != "librpa_chi0")
-        throw std::invalid_argument("screened_format must be librpa_wc, fhi_aims_w, fhi_aims_chi0 or librpa_chi0");
+        && inp.screened_format != "fhi_aims_chi0" && inp.screened_format != "librpa_chi0"
+        && inp.screened_format != "full_w_binary")
+        throw std::invalid_argument("screened_format must be librpa_wc, fhi_aims_w, fhi_aims_chi0, librpa_chi0 or full_w_binary");
+    if (inp.bse_w_boundary_average && inp.bse_plasma_energy_ev != 0.)
+        throw std::invalid_argument("W boundary averaging currently requires static screening");
     if (inp.chi0_coulomb_metric != "full" && inp.chi0_coulomb_metric != "single_cut")
         throw std::invalid_argument("chi0_coulomb_metric must be full or single_cut");
     if (inp.screened_format.find("chi0") != std::string::npos && inp.chi0_headwing && inp.chi0_coulomb_metric != "full")
@@ -282,7 +286,6 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
     inp.bse_tda = lower(trim(inp.bse_tda));
     inp.abs_gauge = lower(trim(inp.abs_gauge));
     inp.wavefunction_gauge = lower(trim(inp.wavefunction_gauge));
-
     if (inp.input_dir.empty())
         throw std::invalid_argument("input_dir is required in libbse.in");
     if (inp.output_dir.empty())
@@ -388,6 +391,7 @@ void Parameter::print(std::ostream &output) const
     for (const std::string &spin_type : inp.bse_spin_types)
         output << ' ' << spin_type;
     output << '\n'
+           << "  bse_w_boundary_average: " << inp.bse_w_boundary_average << '\n'
            << "  bse_tda: " << inp.bse_tda << '\n'
            << "  bse_ri_hartree: " << inp.bse_ri_hartree << '\n'
            << "  bse_use_fine_kgrid: " << inp.bse_use_fine_kgrid << '\n'

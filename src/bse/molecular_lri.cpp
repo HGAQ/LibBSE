@@ -1,6 +1,8 @@
+#include "w_boundary_phase.h"
 #include "utils/memory_views.h"
 #include "utils/profiler.h"
 #include "molecular_lri.h"
+#include "uniform_qmesh.h"
 
 #include <RI/global/Array_Operator.h>
 
@@ -192,11 +194,31 @@ MolecularLri::MolecularLri(librpa_int::Dataset &dataset,
     lr_.set_parallel(dataset_.comm_h.comm, dataset_.atoms.size(),
                      static_cast<std::size_t>(nk_), dataset_.pbc.period_array);
     memory_ = std::make_unique<MemoryWatch>([this](MemoryVisitor &v) {
+        visit_memory(v, w_boundary_tensors_, "LibRI.w_boundary_tensors");
         visit_memory(v, lr_.map_psi, "LibRI.wavefunctions");
         visit_memory(v, lr_.Csk_ao_mo, "LibRI.Csk_ao_mo");
         for (const auto &entry : lr_.lrik.data_pool)
             visit_memory(v, entry.second.Ds_ab, "LibRI." + entry.first);
     });
+    // On an even coarse mesh, +/-N/2 have the same sampled phase but differ
+    // between samples. Add their averaged-phase correction after W(R)->W(q),
+    // before the RI contraction, so both batched and legacy paths see it.
+    if (options_.bse_w_boundary_average)
+        lr_.lrik.screened_q_correction = [this](int w_boundary_iatom, int w_boundary_jatom,
+            const KPoint &w_boundary_qfrac, RI::Tensor<Complex> &w_boundary_pair) {
+                if(options_.bse_w_boundary_average) {
+                    const auto w_boundary_row=w_boundary_tensors_.find(w_boundary_iatom);
+                    if(w_boundary_row!=w_boundary_tensors_.end())
+                        for(const auto &[w_boundary_key,w_boundary_tensor]:w_boundary_row->second) {
+                            if(w_boundary_key.first!=w_boundary_jatom) continue;
+                            const auto w_phase_delta=w_boundary_phase_delta(w_boundary_qfrac,w_boundary_key.second,dataset_.pbc.period_array);
+                            if(std::abs(w_phase_delta)<1.e-15) continue;
+                            if(w_boundary_pair.empty()) w_boundary_pair=RI::Tensor<Complex>(w_boundary_tensor.shape);
+                            for(std::size_t w_entry=0;w_entry<w_boundary_tensor.get_shape_all();++w_entry)
+                                w_boundary_pair.ptr()[w_entry]+=w_phase_delta*w_boundary_tensor.ptr()[w_entry];
+                        }
+                }
+            };
     build_exact_q_map();
 }
 
@@ -226,8 +248,21 @@ void MolecularLri::initialize(TensorMap<Complex> &Cs_in,
     lr_.set_Vs(Vs_in, PARAM.constants.coulomb_threshold, set_i, set_j);
     libbse::MemoryTracker::instance().checkpoint();
     Vs_in.clear();
-    lr_.set_Ws(Ws_in, PARAM.constants.coulomb_threshold, set_i, set_j);
+    if (options_.requires_screened())
+        lr_.set_Ws(Ws_in, PARAM.constants.coulomb_threshold, set_i, set_j);
     libbse::MemoryTracker::instance().checkpoint();
+    // Retain only endpoint tensors needed by the phase correction. RI tensors
+    // share their payload here; the original input map can still be cleared.
+    if(options_.bse_w_boundary_average && options_.requires_screened()) {
+        w_boundary_tensors_.clear();
+        for(const auto &[w_iatom,w_atom_pairs]:lr_.lrik.data_pool.at("Ws_").Ds_ab)
+            for(const auto &[w_pair_key,w_pair_tensor]:w_atom_pairs) {
+                bool w_is_boundary=false;
+                for(int w_axis=0;w_axis<3;++w_axis)
+                    w_is_boundary=w_is_boundary || (dataset_.pbc.period_array[w_axis]%2==0 && w_pair_key.second[w_axis]==-dataset_.pbc.period_array[w_axis]/2);
+                if(w_is_boundary) w_boundary_tensors_[w_iatom][w_pair_key]=w_pair_tensor;
+            }
+    }
     Ws_in.clear();
 
     {
@@ -246,16 +281,26 @@ void MolecularLri::build_exact_q_map()
 {
     using namespace RI::Array_Operator;
     const KPoint period{1.0, 1.0, 1.0};
+    // Mathematically identical k2-k1 transfers can differ in their last floating
+    // digits. Canonical fine-mesh keys let them share one Fourier transform;
+    // they do not round transfers to the coarser screening mesh.
+    const auto qmesh_shape=infer_uniform_qmesh(lr_.kindex_map);
     for (const int k1 : lr_.k1_indices)
     {
         for (const int k2 : lr_.k2_indices)
         {
-            const KPoint q = (lr_.kindex_map[static_cast<std::size_t>(k2)]
-                              - lr_.kindex_map[static_cast<std::size_t>(k1)]) % period;
+            const KPoint q = canonical_uniform_q(
+                (lr_.kindex_map[static_cast<std::size_t>(k2)]
+                 - lr_.kindex_map[static_cast<std::size_t>(k1)]) % period,
+                qmesh_shape);
             lr_.q2kpair[q].emplace_back(k1, k2);
         }
     }
     for (const auto &entry : lr_.q2kpair) lr_.q_list.push_back(entry.first);
+    if (dataset_.comm_h.myid==0 && qmesh_shape[0]>0)
+        std::cout << "Uniform fine q mesh: " << qmesh_shape[0] << ' '
+                  << qmesh_shape[1] << ' ' << qmesh_shape[2]
+                  << "; rank-0 transfer keys: " << lr_.q_list.size() << '\n';
 }
 
 void MolecularLri::build_wavefunctions()

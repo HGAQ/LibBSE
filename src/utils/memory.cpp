@@ -141,10 +141,12 @@ void MemoryTracker::report_final(std::ostream &out, MPI_Comm comm) {
     FormatGuard guard(out);
     long double residual = 0;
     for (const auto &x : all) residual += x.current;
+    // Payload counts are bytes. Use the same decimal MB conversion as the
+    // per-rank statistics; dividing by 1e3 would print kB under an MB label.
     out << "Partial memory accounting:\n"
         << "  | Residual value for overall tracked memory usage across ranks: "
-        << std::fixed << std::setprecision(6) << static_cast<double>(residual / 1.e3L)
-        << " MB (should be 0.000 MB)\n"
+        << std::fixed << std::setprecision(6) << static_cast<double>(residual / 1.e6L)
+        << " MB (should be 0.000000 MB)\n"
         << "  | Peak values for overall tracked memory usage:\n";
     statistics(out, all, 1);
     out << "  | Largest tracked array allocation:\n";

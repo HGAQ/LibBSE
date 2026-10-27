@@ -1,4 +1,6 @@
 #include "io/aims_screened.h"
+#include "io/full_w_binary.h"
+#include <cstdint>
 #include "interface/librpa_api.h"
 #include <filesystem>
 #include <fstream>
@@ -29,6 +31,22 @@ void fixture(const fs::path &root) {
         }
     }
 }
+// Same analytic W as the text fixture, but with the complete static q mesh.
+void write_binary_w_fixture(const fs::path &w_root) {
+    for (int w_iq=0; w_iq<3; ++w_iq) {
+        std::ofstream w_output(w_root/("full_w_q_"+std::to_string(w_iq)+".bin"), std::ios::binary);
+        const std::int32_t w_dimensions[4]={2,3,1,1};
+        const double w_q_frequency[4]={w_iq/3.,0.,0.,0.};
+        const double w_angle=2*libbse::PARAM.constants.pi*w_q_frequency[0];
+        const libbse::Complex w_auxiliary_q[4]={2+std::cos(w_angle),
+            libbse::Complex(0,std::sin(w_angle)),libbse::Complex(0,-std::sin(w_angle)),4};
+        w_output.write("LIBBSE_FULL_W_V1",16);
+        w_output.write(reinterpret_cast<const char*>(w_dimensions),sizeof(w_dimensions));
+        w_output.write(reinterpret_cast<const char*>(w_q_frequency),sizeof(w_q_frequency));
+        w_output.write(reinterpret_cast<const char*>(w_auxiliary_q),sizeof(w_auxiliary_q));
+        if (!w_output) throw std::runtime_error("cannot write binary W fixture");
+    }
+}
 int main(int argc,char **argv) {
     MPI_Init(&argc,&argv);
     int rank,size; MPI_Comm_rank(MPI_COMM_WORLD,&rank); MPI_Comm_size(MPI_COMM_WORLD,&size);
@@ -36,7 +54,7 @@ int main(int argc,char **argv) {
     const auto root=fs::temp_directory_path()/("libbse_aims_w_"+std::to_string(id));
     try {
         LibRPA_API::initialize();
-        if (rank==0) { fs::create_directories(root); fixture(root); }
+        if (rank==0) { fs::create_directories(root); fixture(root); write_binary_w_fixture(root); }
         MPI_Barrier(MPI_COMM_WORLD);
         {
             librpa_int::Dataset dataset(MPI_COMM_WORLD);
@@ -58,6 +76,20 @@ int main(int argc,char **argv) {
                     : libbse::Complex(0,(i==0 ? 1:-1)*std::sin(angle));
                 if (std::abs(x-expected)>1.e-12) throw std::runtime_error("3->4 Fourier interpolation or W normalization failed");
             }
+            const auto w_binary_r=libbse::read_full_w_binary(options,dataset,rows,{0,1});
+            for (int w_iatom:rows) for (int w_jatom=0; w_jatom<2; ++w_jatom)
+                for (const auto &w_cell:dataset.pbc.Rlist) {
+                    const auto w_pair_key=std::make_pair(w_jatom,std::array<int,3>{w_cell.x,w_cell.y,w_cell.z});
+                    if (std::abs(w_binary_r.at(w_iatom).at(w_pair_key)(0,0)-wr.at(w_iatom).at(w_pair_key)(0,0))>1.e-12)
+                        throw std::runtime_error("binary and text full W Fourier transforms differ");
+                }
+            MPI_Barrier(MPI_COMM_WORLD);
+            if (rank==0) fs::remove(root/"full_w_q_2.bin");
+            MPI_Barrier(MPI_COMM_WORLD);
+            bool w_missing_rejected=false;
+            try { (void)libbse::read_full_w_binary(options,dataset,rows,{0,1}); }
+            catch (const std::runtime_error &) { w_missing_rejected=true; }
+            if (!w_missing_rejected) throw std::runtime_error("incomplete binary W mesh was accepted");
             // Remove one producer block: missing values must not silently turn
             // into zeros in the BSE kernel. All ranks see the same invalid input.
             MPI_Barrier(MPI_COMM_WORLD);

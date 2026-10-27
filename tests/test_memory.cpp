@@ -64,8 +64,8 @@ int main(int argc, char **argv) {
             tracker.report_current(current, MPI_COMM_WORLD);
             require(current.flags() == flags && current.precision() == precision, "report changed caller format");
             if (rank == 0) {
-                require(current.str().find("0.003 MB (on task 0)") != std::string::npos, "wrong MPI minimum");
-                std::ostringstream maximum; maximum << std::fixed << std::setprecision(3) << .003 * size << " MB (on task " << size-1 << ')';
+                require(current.str().find("0.003 MB (on rank 0)") != std::string::npos, "wrong MPI minimum");
+                std::ostringstream maximum; maximum << std::fixed << std::setprecision(3) << .003 * size << " MB (on rank " << size-1 << ')';
                 require(current.str().find(maximum.str()) != std::string::npos, "wrong MPI maximum/rank");
                 const auto average_pos = current.str().find("Average:");
                 require(average_pos != std::string::npos, "missing MPI average");

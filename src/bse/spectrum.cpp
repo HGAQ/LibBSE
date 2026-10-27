@@ -457,15 +457,15 @@ FineVelocityMo prepare_fine_velocity_mo(
             "fine-grid eigenvalues do not contain the selected BSE bands");
 
     const PairPartition partition = pair_partition(dimension, mpi_size, rank);
-    FineVelocityMo result;
-    auto result_memory = watch_memory("spectrum.result", result);
-    result.nk = fine_nk;
-    result.nbands = options.nocc + options.nvirt;
-    result.first_pair = partition.first;
-    result.local_pairs = partition.count;
-    result.values.assign(static_cast<std::size_t>(3) * partition.count,
+    FineVelocityMo fine_velocity;
+    auto fine_velocity_memory = watch_memory("spectrum.fine_velocity", fine_velocity);
+    fine_velocity.nk = fine_nk;
+    fine_velocity.nbands = options.nocc + options.nvirt;
+    fine_velocity.first_pair = partition.first;
+    fine_velocity.local_pairs = partition.count;
+    fine_velocity.values.assign(static_cast<std::size_t>(3) * partition.count,
                          Complex{});
-    result.gaps_ha.resize(static_cast<std::size_t>(partition.count));
+    fine_velocity.gaps_ha.resize(static_cast<std::size_t>(partition.count));
     for (int local_pair = 0; local_pair < partition.count; ++local_pair)
     {
         const int pair = partition.first + local_pair;
@@ -473,7 +473,7 @@ FineVelocityMo prepare_fine_velocity_mo(
         const int pair_in_k = pair % pair_dimension;
         const int i = pair_in_k / options.nvirt;
         const int a = pair_in_k % options.nvirt;
-        result.gaps_ha[local_pair]
+        fine_velocity.gaps_ha[local_pair]
             = eigenvalues(ik, qp.ncore + options.nocc + a)
               - eigenvalues(ik, qp.ncore + i);
     }
@@ -514,13 +514,13 @@ FineVelocityMo prepare_fine_velocity_mo(
                           + options.nocc + a]
                       * std::conj(band_gauge_phases[
                           static_cast<std::size_t>(ik) * selected_bands + i]);
-                result.values[velocity_index(
+                fine_velocity.values[velocity_index(
                     direction, local_pair, partition.count)]
                     = gauge_factor
                       * matrix(qp.ncore + options.nocc + a, qp.ncore + i);
             }
         }
-        return result;
+        return fine_velocity;
     }
 
     if (dataset->mf.get_n_states() != nao)
@@ -753,12 +753,12 @@ FineVelocityMo prepare_fine_velocity_mo(
                 "invalid distributed velocity_mo pair ownership");
         assigned[local_pair] = 1;
         for (int direction = 0; direction < 3; ++direction)
-            result.values[velocity_index(
+            fine_velocity.values[velocity_index(
                 direction, local_pair, partition.count)]
                 = receive_values[static_cast<std::size_t>(3) * received
                                  + direction];
     }
-    return result;
+    return fine_velocity;
 }
 
 template<class Visit>

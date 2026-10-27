@@ -1,3 +1,4 @@
+#include "io/full_w_binary.h"
 #include "io/aims_screened.h"
 #include "io/chi0_screening.h"
 #include "bse_calculation.h"
@@ -182,15 +183,16 @@ void run_bse(const InputParameters &options,
         ScopedTimer timer(global::profiler, "read_qp_bands",
                           "Read quasiparticle bands", dataset->comm_h.comm);
         qp = read_qp_bands(options, *dataset);
-    }
-    if (rank == 0)
-    {
-        std::cout << "BSE quasiparticle bands\n"
-                  << "  selected core offset: " << qp.ncore << '\n'
-                  << "  indirect gap (eV): "
-                  << qp.indirect_gap_ry * PARAM.constants.ry_to_ev << '\n'
-                  << "  direct gap (eV): "
-                  << qp.direct_gap_ry * PARAM.constants.ry_to_ev << '\n';
+        if (rank == 0)
+        {
+            std::cout << "BSE quasiparticle bands\n"
+                      << "  selected core offset: " << qp.ncore << '\n'
+                      << "  indirect gap (eV): "
+                      << qp.indirect_gap_ry * PARAM.constants.ry_to_ev << '\n'
+                      << "  direct gap (eV): "
+                      << qp.direct_gap_ry * PARAM.constants.ry_to_ev << '\n' << '\n';
+        }
+
     }
 
     // Apply the band gauge once, before either Hamiltonian construction or a
@@ -208,19 +210,21 @@ void run_bse(const InputParameters &options,
     if (nstates > dimension)
         throw std::invalid_argument(
             "number of requested states exceeds the BSE dimension");
-    
+
     //already have the velocity matrix in MO representation, just need to read it and calculate the spectrum
     if (options.spectrum_only())
     {
-        if (rank == 0)
-            std::cout << "Preparing fine-grid velocity_mo for velocity gauge...\n";
+
         FineVelocityMo velocity;
         auto velocity_memory = watch_memory("velocity", velocity);
         {
+            if (rank == 0)
+            {
+                std::cout << "Preparing fine-grid velocity_mo for velocity gauge...\n";
+            }
             ScopedTimer timer(global::profiler, "prepare_velocity_mo",
                               "Prepare fine-grid velocity_mo", dataset->comm_h.comm);
-            velocity = prepare_fine_velocity_mo(
-                options, qp, dataset, band_gauge_phases);
+            velocity = prepare_fine_velocity_mo(options, qp, dataset, band_gauge_phases);
         }
 
         for (const std::string &spin_type : options.bse_spin_types)
@@ -365,32 +369,47 @@ void run_bse(const InputParameters &options,
                           "Transform bare Coulomb q to R", dataset->comm_h.comm);
         bare = LibRPA_API::build_bare_coulomb(*dataset);
     }
-
     MolecularLri molecular(*dataset, options, qp);
     Chi0Screening dielectric(options, *dataset);
     // 2. Every reader returns full W(R) on the coarse GW cell. Chi0 readers
     // first screen complete q-space matrices; only the legacy Wc reader adds V.
-    if (rank == 0)
-        std::cout << "Reading screened interaction (" << options.screened_format << ")...\n";
+    if (rank == 0 && options.requires_screened())
+        std::cout << "Reading screened interaction, format as " << options.screened_format << "...\n";
     TensorMap<Complex> screened;
     auto screened_memory = watch_memory("screened", screened);
+    // Channels without a screened kernel should not require W files merely
+    // because the common setup also serves screened BSE calculations.
+    if (options.requires_screened())
     {
         ScopedTimer timer(global::profiler, "read_screened_interaction",
                           "Read and construct screened interaction", dataset->comm_h.comm);
-        screened = [&]() {
-        if (options.screened_format == "fhi_aims_w" || options.screened_format == "fhi_aims_chi0")
-            return read_aims_screened_interaction(options, *dataset,
-                molecular.local_i_atoms(), molecular.local_j_atoms(), &dielectric);
-        if (options.screened_format == "librpa_chi0")
-            return read_librpa_chi0(options, *dataset, molecular.local_i_atoms(), molecular.local_j_atoms(), &dielectric);
-        return read_screened_interaction(options, bare,
-                                         dataset->pbc.Rlist.size(),
-                                         molecular.local_i_atoms(),
-                                         molecular.local_j_atoms());
-        }();
+        if (options.screened_format == "fhi_aims_w"
+            || options.screened_format == "fhi_aims_chi0")
+        {
+            screened = read_aims_screened_interaction(
+                options, *dataset, molecular.local_i_atoms(),
+                molecular.local_j_atoms(), &dielectric);
+        }
+        else if (options.screened_format == "full_w_binary")
+        {
+            screened = read_full_w_binary(options, *dataset,
+                molecular.local_i_atoms(), molecular.local_j_atoms());
+        }
+        else if (options.screened_format == "librpa_chi0")
+        {
+            screened = read_librpa_chi0(
+                options, *dataset, molecular.local_i_atoms(),
+                molecular.local_j_atoms(), &dielectric);
+        }
+        else
+        {
+            screened = read_screened_interaction(
+                options, bare, dataset->pbc.Rlist.size(),
+                molecular.local_i_atoms(), molecular.local_j_atoms());
+        }
     }
 
-    //3. Convert the LibRPA Cs tensors to LibRI coefficients for the BSE contractions.
+    //3. Convert the LibRPA RI coefficients for the BSE contractions.
     if (rank == 0)
         std::cout << "Converting LibRPA Cs tensors for complex LibRI contractions...\n";
     TensorMap<Complex> coefficients;

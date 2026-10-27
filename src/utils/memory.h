@@ -78,6 +78,8 @@ void visit_memory(MemoryVisitor &v, const std::pair<A, B> &x, const std::string 
 
 template<class T, class A>
 void visit_memory(MemoryVisitor &v, const std::vector<T, A> &x, const std::string &name);
+template<class A>
+void visit_memory(MemoryVisitor &v, const std::vector<bool, A> &x, const std::string &name);
 template<class K, class T, class C, class A>
 void visit_memory(MemoryVisitor &v, const std::map<K, T, C, A> &x, const std::string &name);
 template<class T, std::size_t N>
@@ -91,6 +93,13 @@ void visit_memory(MemoryVisitor &v, const std::vector<T, A> &x, const std::strin
     v.add(x.data(), static_cast<std::uint64_t>(x.capacity()) * sizeof(T), name);
     if constexpr (!std::is_trivially_copyable_v<T>)
         for (const auto &item : x) visit_memory(v, item, name);
+}
+template<class A>
+void visit_memory(MemoryVisitor &v, const std::vector<bool, A> &x, const std::string &name) {
+    // vector<bool> packs bits and provides no public backing-buffer pointer.
+    // Use the owner address to deduplicate repeated watches of this vector;
+    // capacity/8 estimates packed storage, excluding implementation overhead.
+    v.add(&x, (static_cast<std::uint64_t>(x.capacity()) + 7) / 8, name);
 }
 template<class K, class T, class C, class A>
 void visit_memory(MemoryVisitor &v, const std::map<K, T, C, A> &x, const std::string &name) {

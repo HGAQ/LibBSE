@@ -9,10 +9,51 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 namespace libbse {
 using librpa_int::Matz;
 namespace {
+// The FHI-aims BSE converter stores velocity(row,col)=<col|v|row>.
+// LibRPA's analytic wing contracts C_vc=<v|P_mu|c> with <c|v|v>,
+// and therefore needs the conventional <row|v|col> storage instead.
+// IPA and the diagonal head use |v_cv|^2 and cannot detect this mismatch.
+// The wing keeps the complex phase, so the wrong row/column convention changes
+// the response even when an ordinary intensity check appears to agree.
+// This is a transpose, not an adjoint: we swap the stored bra/ket positions.
+// Adapt only while computing head/wing: subsequent BSE optics must continue
+// to see the original storage convention, including after exceptions.
+class AimsHeadwingVelocityScope {
+public:
+    AimsHeadwingVelocityScope(librpa_int::velocity_matrix_t &aims_velocity,
+                             bool aims_needs_transpose)
+        : aims_velocity_(aims_velocity), aims_needs_transpose_(aims_needs_transpose)
+    {
+        if (!aims_needs_transpose_) return;
+        for (const auto &aims_spin_velocity : aims_velocity_)
+            for (const auto &aims_k_velocity : aims_spin_velocity)
+                for (const auto &aims_cartesian_velocity : aims_k_velocity)
+                    if (aims_cartesian_velocity.nr != aims_cartesian_velocity.nc)
+                        throw std::runtime_error("FHI-aims head/wing velocity must be square");
+        transpose_aims_velocity();
+    }
+    ~AimsHeadwingVelocityScope() { if (aims_needs_transpose_) transpose_aims_velocity(); }
+    AimsHeadwingVelocityScope(const AimsHeadwingVelocityScope &) = delete;
+    AimsHeadwingVelocityScope &operator=(const AimsHeadwingVelocityScope &) = delete;
+private:
+    void transpose_aims_velocity() noexcept
+    {
+        for (auto &aims_spin_velocity : aims_velocity_)
+            for (auto &aims_k_velocity : aims_spin_velocity)
+                for (auto &aims_cartesian_velocity : aims_k_velocity)
+                    for (int aims_row = 0; aims_row < aims_cartesian_velocity.nr; ++aims_row)
+                        for (int aims_col = aims_row + 1; aims_col < aims_cartesian_velocity.nc; ++aims_col)
+                            std::swap(aims_cartesian_velocity(aims_row, aims_col),
+                                      aims_cartesian_velocity(aims_col, aims_row));
+    }
+    librpa_int::velocity_matrix_t &aims_velocity_;
+    bool aims_needs_transpose_;
+};
 Matz hermitian(const Matz &a) {
     double error=0, norm=0;
     for (std::size_t i=0;i<a.nr();++i) for(std::size_t j=0;j<a.nc();++j) {
@@ -143,6 +184,8 @@ Matz Chi0Screening::screen(const Matz &chi,const librpa_int::Vector3_Order<doubl
             opts.use_symmetry_rpa=LIBRPA_SWITCH_OFF; opts.use_symmetry_gw=LIBRPA_SWITCH_OFF;
             opts.use_kpara_scf_eigvec=LIBRPA_SWITCH_OFF;
             ds.p_headwing.reset();
+            const AimsHeadwingVelocityScope aims_headwing_velocity_scope(
+                ds.velocity_matrix, options_.input_format == "fhi_aims");
             initialize_ds_headwing(ds,opts,true);
         }
     }

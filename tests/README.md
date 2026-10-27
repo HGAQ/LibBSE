@@ -122,3 +122,17 @@ ctest --test-dir build-bse --output-on-failure
 - `main()` distributes source k blocks between two ranks, calls the migrated
   `transform_k_2dlocal()` over two communication batches, and checks every
   locally owned 2D block-cyclic matrix element against the dense formula.
+
+## `test_uniform_qmesh.cpp`
+
+- Checks uniform, shifted and rectangular meshes, unique transfer q keys,
+  reciprocal equivalence, and fallback for irregular or duplicate meshes.
+- Checks even-grid boundary phases against an explicit average of equivalent
+  images, unchanged coarse-grid values, and unchanged odd-grid phases.
+
+## `test_aims_screened.cpp`
+
+- Checks a known Fourier polynomial on a finer mesh, time-reversal restoration,
+  frequency selection and rejection of incomplete text matrix blocks.
+- Compares the complete static binary W cache with the text reader in real
+  space and rejects a missing binary q point, on one and two MPI ranks.

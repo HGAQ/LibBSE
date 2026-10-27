@@ -68,6 +68,7 @@ private:
     librpa_int::Dataset &dataset_;
     const InputParameters &options_;
     const QuasiparticleBands &qp_;
+    TensorMap<Complex> w_boundary_tensors_;
     int nk_ = 0;
     int pair_dimension_ = 0;
     RI::LR<int, int, 3, Complex> lr_;

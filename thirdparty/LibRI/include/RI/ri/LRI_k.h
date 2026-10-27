@@ -6,6 +6,7 @@
 #pragma once
 
 #include "LRI.h"
+#include <functional>
 
 namespace RI
 {
@@ -20,6 +21,8 @@ public:
 	using Tk = std::array<double, Ndim>;
 
 	LRI_k() = default;
+    // Optional additive correction after screened W(R)->W(q), before CWC.
+    std::function<void(TA, TA, const Tk&, Tensor<Tdata>&)> screened_q_correction;
 
     std::map<int, std::map<TA, Tensor<Tdata>>> cal_Csk_ao_mo(
         const std::map<TA, std::map<TAC, Tensor<Tdata>>>& CsR_ao,

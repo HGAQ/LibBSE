@@ -321,6 +321,8 @@ LRI_k<TA, Tcell, Ndim, Tdata>::cal_cvc_mo_k_onthefly(
 						std::complex<double> fac (cos(arg), sin(arg));
 						LRI_Cal_Aux::add_Ds(V_mu_nu_R, Vq_mu_nu, Global_Func::convert<Tdata>(fac));
 					}
+                    if (save_name == "Ws_" && this->screened_q_correction)
+                        this->screened_q_correction(mu, nu, q, Vq_mu_nu);
 					if (Vq_mu_nu.empty()) continue;
 
 					for (const auto& kpair: q2kpair.at(q))

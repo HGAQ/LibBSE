@@ -39,6 +39,7 @@ struct InputParameters
     std::string screened_format = "librpa_wc";
     std::string chi0_coulomb_metric = "full";
     bool chi0_headwing = true;
+    bool bse_w_boundary_average = false; // symmetric even-grid endpoint images for W
     bool out_screening_matrices = false;
     // Positive plasma energy enables a one-shot effective kernel. Eb is computed
     // from the lowest STATIC excitation and the minimum direct QP transition.

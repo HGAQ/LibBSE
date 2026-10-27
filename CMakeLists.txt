@@ -64,6 +64,7 @@ add_library(libbse_core
   src/bse/spectrum.cpp
   src/interface/librpa_api.cpp
   src/io/aims_screened.cpp
+  src/io/full_w_binary.cpp
   src/io/chi0_screening.cpp
   src/io/bse_files.cpp
   src/io/fhi_aims_adapter.cpp
@@ -140,6 +141,9 @@ if(LIBBSE_BUILD_TESTING)
     PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
 
   add_executable(test_aims_screened tests/test_aims_screened.cpp)
+  add_executable(test_uniform_qmesh tests/test_uniform_qmesh.cpp)
+  target_include_directories(test_uniform_qmesh PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME LibBSE_uniform_qmesh COMMAND test_uniform_qmesh)
   target_link_libraries(test_aims_screened PRIVATE libbse_core)
   add_test(NAME LibBSE_aims_screened_serial COMMAND test_aims_screened)
   add_test(NAME LibBSE_aims_screened_mpi

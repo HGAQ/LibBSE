@@ -59,9 +59,13 @@ libbse::TensorMap<libbse::Complex> build_bare_coulomb(
                                         dataset.pbc, true, false);
     auto real_space_memory = libbse::watch_memory("Coulomb.FT_input", real_space);
     // Chi0 screening still needs V(q) after constructing the Hartree kernel.
+    // Keep both the checkpoint and clear inside this condition: without braces
+    // clear() also runs for chi0 input and destroys Coulomb data needed for W.
     if (libbse::PARAM.inp.screened_format.find("chi0") == std::string::npos)
+    {
         libbse::MemoryTracker::instance().checkpoint();
         dataset.vq_cut.clear();
+    }
 
     libbse::TensorMap<libbse::Complex> result;
     auto result_memory = libbse::watch_memory("Coulomb.real_space_output", result);
