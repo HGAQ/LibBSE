@@ -1,41 +1,34 @@
-# GitHub 自动回归
+# GitHub-hosted 自动编译与测试
 
-[工作流](../.github/workflows/regression.yml) 已配置 `push`、`pull_request` 和手动触发。普通本地 commit 不会触发 GitHub；push 后测试推送的最新提交。一次 push 包含多个 commit 时，不会逐个测试中间提交。要逐个测试，应逐次 push。本工作流不取消前一次运行。
+[工作流](../.github/workflows/regression.yml) 使用 GitHub 提供的 `ubuntu-24.04` 临时虚拟机。无需在集群注册 runner，无需 `LIBBSE_CI_ENV`、SSH 密钥或集群文件访问权限。
 
-## 两个检查
+## 启用步骤
 
-- `Comparator self-tests`：GitHub Ubuntu 机器运行 Python 比较器自检；每次 push 和 PR 都执行。这不包含 C++ 编译和 BSE 求解。
-- `Build and full regression`：专用 runner 编译候选程序，运行快速测试与十组真实算例，比较 eigenvalue、amplitude、W；每次仓库 push 或手动触发执行。PR 事件本身不执行此项，但仓库内分支的 push 会执行。外部 fork 的代码不能直接在持有本地计算数据的 runner 上运行。
+1. 将更新的 workflow、[ELPA 构建脚本](build_ci_elpa.sh) 和配套文档一起提交、推送。
+2. 仓库 Settings → Actions → General 中允许使用本工作流的 GitHub 官方 actions；通常默认已允许。
+3. 打开 Actions → LibBSE regression，查看 `Comparator self-tests` 与 `Build and fast tests`。两者成功才说明本轮 GitHub 快速检查通过。
+4. 可在分支规则中要求 `Build and fast tests` 通过后才能合并。
 
-完整测试没有在线 runner 时会排队，不会退化为只跑比较器并称为完整通过。
+触发事件为 push、pull_request 和 workflow_dispatch。本地 commit 不会触发远程运行；一次 push 多个 commit 时测试最新提交。每次运行结束上传日志和 JUnit，失败时也尝试上传。没有使用 `pull_request_target`。
 
-## 首次启用
+## 自动执行的工作
 
-1. 将本轮 `regression_test`、CMake 修改和 `.github/workflows/regression.yml` 一起提交并推送到 GitHub。仅上传 workflow 不够。
-2. 在仓库 Settings → Actions → Runners → New self-hosted runner 注册专用 Linux x64 机器，增加标签 `libbse`。按 GitHub 页面给出的命令安装并启动 runner。不要将计算任务直接放在集群登录节点；若使用 Slurm，应先获得计算资源，再在该分配内启动 runner，或另外实现提交和等待 Slurm 的桥接脚本。当前脚本直接在 runner 所在机器运行。
-3. 机器准备至少 8 个可用 CPU、建议 48 GB 内存，并安装已经验证的 GCC、OpenMPI、CMake/CTest、OpenBLAS、ScaLAPACK、ELPA、Python ≥3.11 和 NumPy。准备固定版本的本地扩展 LibRPA、LibRI、LibComm、cereal；不能直接假定任意上游 LibRPA 可替代。
-4. 在 runner 工作区之外创建环境文件，加载编译器／MPI 环境并设置下表变量。在仓库 Settings → Secrets and variables → Actions → Variables 中添加 `LIBBSE_CI_ENV`，其值为该环境文件在 runner 上的实际路径。
-5. 推送一个提交，在 Actions 查看两个检查。完整测试成功后下载 `regression-…` artifact，其中包含 JUnit 和比较结果。
+- 安装 Ubuntu 的 GCC/GFortran、OpenMPI、OpenBLAS、ScaLAPACK 和构建工具。
+- 下载兼容的 LibRPA：`HGAQ/LibRPA_LibBSE`，固定 commit `7551e28df26175167eb2415e5dbbaf5bec7d1ce6`；不跟随 master 漂移。
+- 下载 ELPA 2024.05.001，核对 SHA256，从源码启用 OpenMP 和 skew-symmetric 接口。LibBSE 的 full-BSE 路径需要这个接口。
+- 使用仓库内的 LibRI、LibComm、cereal，Release 编译 LibBSE 和测试程序。
+- 执行 24 项快速 CTest，包括 MPI、ELPA、χ₀、文件读取、转换器和比较器自检。
 
-| 环境文件变量 | 含义 |
-|---|---|
-| `LIBRPA_SOURCE` | 固定的 LibRPA 源码目录，包含本地文件读取接口 |
-| `LIBRI_HEADERS` | LibRI 的 include 目录 |
-| `ELPA_PREFIX` | ELPA 安装前缀 |
-| `REGRESSION_FIXTURES` | 固定的模板数据目录，结构对应 [cases.json](cases.json) |
-| `REGRESSION_REFERENCE` | 已审核的冻结 LibBSE 可执行文件 |
-| `REGRESSION_REFERENCE_SHA256` | 上述程序的 SHA256；脚本在编译前核对 |
+为控制内存，编译并行度为 2，CTest 顺序执行。MPI 允许 oversubscription，使四进程／线程测试可在标准 runner 的 CPU 数量内完成。Ubuntu 工具链与本地集群不同，第一次云端构建仍需核实兼容性；不能把之前的集群通过结果当作云端实测。
 
-变量指向 runner 上的实际路径，不能使用 GitHub Ubuntu 机器访问不到的本地文件。模板输入中的路径也必须在 runner 上有效。首次冻结基线的物理验证范围见 [VALIDATION.md](VALIDATION.md)。基线不能随每次候选编译自动更新，否则真实回归会被掩盖。
+## 尚未包含的完整算例
 
-[ci.sh](ci.sh) 在独立 `build-ci` 目录编译；测试失败返回非零，GitHub 显示失败。没有改动生产源码。依赖和 fixture 应由管理员固定保存，更新时另行记录版本、输入哈希与审核理由。
+十组真实算例没有自动上传，也不在该工作流中运行。完整回归需要另行准备可下载、允许公开的数据包与固定参考结果，并核实标准 runner 的内存和磁盘容量。缺少它们时，快速检查通过不代表真实算例回归通过。
 
-## 合并门槛
+现有 [ci.sh](ci.sh) 保留为本地完整回归入口，GitHub workflow 不再调用它。历史 [VALIDATION.md](VALIDATION.md) 记录的是集群实测。
 
-启用并观察完整检查后，可在仓库分支规则中要求 `Build and full regression` 通过才允许合并。当前外部 fork PR 没有完整检查：维护者需审核代码，将其放到仓库内的测试分支触发 push 测试。不要改用 `pull_request_target` 自动执行未审核代码。
+## 配置验证状态
 
-## 本轮验证范围
+已核实固定 LibRPA commit 在公开仓库可访问，下载并核对 ELPA 发布包 SHA256，检查 shell 语法和比较器自检。新工作流尚未在 GitHub Ubuntu 上完成编译验证。推送后应以 Actions 的实际日志为准。
 
-已检查 shell 语法并运行比较器自检（6/6）。底层本地测试此前已通过；新 GitHub 工作流尚未在远程执行，也尚未注册 runner。首次远程运行仍需验证全新检出、依赖路径、MPI 资源与 artifact 上传。
-
-参考：[触发事件](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)、[添加 runner](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners)、[runner 安全边界](https://docs.github.com/en/actions/concepts/security/compromised-runners)。
+参考：[标准 runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)、[工作流触发](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)。

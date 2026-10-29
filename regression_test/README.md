@@ -97,4 +97,4 @@ P 对应 `bse_plasma_energy_ev`。**当前生产接口不支持直接输入 Eb**
 
 默认 CTest 可在依赖就绪的 CI 环境运行；真实算例需要另外准备固定数据和参考程序。本次完成本地编译与回归框架，不会自动上传生产数据、安装集群 runner 或开启远程工作流。日后 CI 应固定 LibRPA/LibRI/ELPA 版本，保留 JUnit、comparison.json 和输入哈希，且不得把缺少 fixture 当作 PASS。
 
-GitHub 自动运行的配置和首次启用步骤见 [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)。工作流已写入仓库，尚未部署 runner 或进行远程验证。
+GitHub 自动运行的配置和首次启用步骤见 [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)。工作流使用 GitHub-hosted Ubuntu 编译并运行快速测试，不需要部署 runner；真实算例仍需外部数据。云端编译尚待首次运行验证。

@@ -23,25 +23,60 @@ jobs:
       - run: python -m pip install numpy==2.2.6
       - run: python regression_test/test_compare_outputs.py
 
-  full-regression:
-    name: Build and full regression
-    # Run trusted repository pushes; fork PRs use the hosted job above.
-    if: github.event_name != 'pull_request'
-    runs-on: [self-hosted, linux, x64, libbse]
-    timeout-minutes: 180
+  build-and-test:
+    name: Build and fast tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     env:
-      LIBBSE_CI_ENV: ${{ vars.LIBBSE_CI_ENV }}
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      OMPI_MCA_rmaps_base_oversubscribe: '1'
+      OMPI_MCA_hwloc_base_binding_policy: none
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Compile and run all tests
-        run: bash regression_test/ci.sh
+      - uses: actions/checkout@v4
+        with:
+          repository: HGAQ/LibRPA_LibBSE
+          ref: 7551e28df26175167eb2415e5dbbaf5bec7d1ce6
+          path: ci-deps/LibRPA
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ gfortran cmake make pkg-config libtool \
+            libopenmpi-dev openmpi-bin libopenblas-dev libscalapack-openmpi-dev
+          python -m pip install numpy==2.2.6
+      - name: Build ELPA with skew support
+        run: bash regression_test/build_ci_elpa.sh
+      - name: Compile LibBSE and run fast tests
+        run: |
+          set -euo pipefail
+          mkdir -p build-ci
+          cmake -S . -B build-ci \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=mpicxx -DCMAKE_Fortran_COMPILER=mpifort \
+            -DBLA_VENDOR=OpenBLAS -DLIBRPA_USE_CMAKE_INC=OFF \
+            -DLIBBSE_BUILD_TESTING=ON \
+            -DLIBRPA_INCLUDE_DIR="$PWD/ci-deps/LibRPA/include" \
+            -DCEREAL_INCLUDE_DIR="$PWD/thirdparty/cereal-1.3.0/include" \
+            -DLIBCOMM_INCLUDE_DIR="$PWD/thirdparty/LibComm/include" \
+            -DLIBRI_INCLUDE_DIR="$PWD/thirdparty/LibRI/include" \
+            -DEXTERNAL_ELPA_DIR="$PWD/ci-deps/elpa-install" \
+            -DLIBBSE_REGRESSION_FIXTURES= \
+            -DLIBBSE_REGRESSION_REFERENCE_EXE= 2>&1 | tee build-ci/configure.log
+          cmake --build build-ci --parallel 2 2>&1 | tee build-ci/build.log
+          ctest --test-dir build-ci -LE integration --parallel 1 --no-tests=error \
+            --output-on-failure --output-junit regression.xml 2>&1 | tee build-ci/ctest.log
       - name: Save test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: regression-${{ github.sha }}-${{ github.run_attempt }}
+          name: fast-tests-${{ github.sha }}-${{ github.run_attempt }}
           retention-days: 14
           if-no-files-found: warn
           path: |
@@ -49,5 +84,4 @@ jobs:
             build-ci/*.xml
             build-ci/CMakeCache.txt
             build-ci/Testing/Temporary/LastTest.log
-            build-ci/regression_runs/*/comparison.json
-            build-ci/regression_runs/*/provenance.json
+            ci-deps/elpa-build/config.log
