@@ -200,26 +200,42 @@ MolecularLri::MolecularLri(librpa_int::Dataset &dataset,
         for (const auto &entry : lr_.lrik.data_pool)
             visit_memory(v, entry.second.Ds_ab, "LibRI." + entry.first);
     });
-    // On an even coarse mesh, +/-N/2 have the same sampled phase but differ
-    // between samples. Add their averaged-phase correction after W(R)->W(q),
-    // before the RI contraction, so both batched and legacy paths see it.
+    // Correct W(q) after its Fourier transform and before the RI contraction.
     if (options_.bse_w_boundary_average)
-        lr_.lrik.screened_q_correction = [this](int w_boundary_iatom, int w_boundary_jatom,
-            const KPoint &w_boundary_qfrac, RI::Tensor<Complex> &w_boundary_pair) {
-                if(options_.bse_w_boundary_average) {
-                    const auto w_boundary_row=w_boundary_tensors_.find(w_boundary_iatom);
-                    if(w_boundary_row!=w_boundary_tensors_.end())
-                        for(const auto &[w_boundary_key,w_boundary_tensor]:w_boundary_row->second) {
-                            if(w_boundary_key.first!=w_boundary_jatom) continue;
-                            const auto w_phase_delta=w_boundary_phase_delta(w_boundary_qfrac,w_boundary_key.second,dataset_.pbc.period_array);
-                            if(std::abs(w_phase_delta)<1.e-15) continue;
-                            if(w_boundary_pair.empty()) w_boundary_pair=RI::Tensor<Complex>(w_boundary_tensor.shape);
-                            for(std::size_t w_entry=0;w_entry<w_boundary_tensor.get_shape_all();++w_entry)
-                                w_boundary_pair.ptr()[w_entry]+=w_phase_delta*w_boundary_tensor.ptr()[w_entry];
-                        }
-                }
-            };
+        lr_.lrik.screened_q_correction = WBoundaryCorrection{this};
     build_exact_q_map();
+}
+
+// Add [averaged phase - original phase] * W_ij(R) for boundary cells.
+// Use fractional q coordinates and the coarse BvK period.
+void MolecularLri::apply_w_boundary_correction(
+    int w_boundary_iatom, int w_boundary_jatom,
+    const KPoint &w_boundary_qfrac,
+    RI::Tensor<Complex> &w_boundary_pair) const
+{
+    if (!options_.bse_w_boundary_average) return;
+
+    // Cache layout: iatom -> {(jatom, R) -> W_ij(R)}.
+    const auto w_boundary_row = w_boundary_tensors_.find(w_boundary_iatom);
+    if (w_boundary_row == w_boundary_tensors_.end()) return;
+
+    for (const auto &[w_boundary_key, w_boundary_tensor] : w_boundary_row->second)
+    {
+        if (w_boundary_key.first != w_boundary_jatom) continue;
+
+        // Average the +/-N/2 images on even boundary axes; coarse q is unchanged.
+        const auto w_phase_delta = w_boundary_phase_delta(
+            w_boundary_qfrac, w_boundary_key.second, dataset_.pbc.period_array);
+        if (std::abs(w_phase_delta) < 1.e-15) continue; // Negligible phase change.
+
+        // Allocate zeros if needed; otherwise add to the existing W(q).
+        if (w_boundary_pair.empty())
+            w_boundary_pair = RI::Tensor<Complex>(w_boundary_tensor.shape);
+        for (std::size_t w_entry = 0;
+             w_entry < w_boundary_tensor.get_shape_all(); ++w_entry)
+            w_boundary_pair.ptr()[w_entry]
+                += w_phase_delta * w_boundary_tensor.ptr()[w_entry];
+    }
 }
 
 void MolecularLri::initialize(TensorMap<Complex> &Cs_in,

@@ -1,80 +1,44 @@
 # LibBSE 使用教程
 
-LibBSE 用来计算周期性材料的电子–空穴激发和光学跃迁。程序读取 Kohn–Sham（KS）电子结构、GW 准粒子能量和屏蔽相互作用，构造并求解 Bethe–Salpeter 方程（BSE），得到激发能、激子振幅、跃迁偶极矩、振子强度及展宽光谱。例如，研究 Si 的光吸收时，先用 DFT 得到波函数，再用 GW 修正单粒子能量，最后用 BSE 加入电子–空穴相互作用，比较独立粒子跃迁与激子激发。
+## 0. 什么是LibBSE
 
-第 1 节介绍计算方法和数据流程，第 2–3 节介绍依赖安装与程序编译，第 4 节说明运行环境，第 5 节列出 `libbse.in` 的全部选项，第 6 节介绍 8 个 Si 算例，第 7–8 节说明结果检查和常见问题。上游程序的说明限于生成 LibBSE 输入所需的配置。
+LibBSE 是一款面向周期性材料电子–空穴激发及光学响应计算的高效 Bethe–Salpeter 方程（Bethe–Salpeter Equation, BSE）求解程序。该软件基于多体微扰理论（Many-Body Perturbation Theory, MBPT），通过构建并求解电子–空穴相互作用方程，能够系统地描述材料中的激子形成、电子–空穴关联效应以及光学跃迁过程，为研究材料的激发态性质和光学响应提供可靠的理论计算工具。
 
-## 1. 程序功能与计算流程
+LibBSE 具有良好的模块化设计和程序接口兼容性，可适配多种基于数值原子轨道（Numerical Atomic Orbitals, NAOs）的第一性原理电子结构程序及相关计算库，包括 FHI-aims、ABACUS 和 LibRPA 等。通过读取底层电子结构程序提供的 Kohn–Sham（KS）轨道、能量本征值、GW 准粒子能量以及屏蔽库仑相互作用等数据，LibBSE 能够构建电子–空穴相互作用核，并在选定的近似和计算框架下求解 Bethe–Salpeter 方程，从而获得材料的激发态信息。
 
-### 1.1 BSE 本征问题
+在计算结果方面，LibBSE 不仅能够计算激发能和激子本征态，还能够进一步分析激子波函数及其电子–空穴空间分布，计算跃迁偶极矩、振子强度等光学跃迁性质，并通过引入适当的谱线展宽获得材料的吸收光谱及其他相关光学响应谱。通过对激发态能量、激子振幅和光学跃迁强度的综合分析，可以深入理解材料的光学跃迁机制、激子束缚效应以及电子–空穴相互作用对光谱特征的影响。
+
+## 1. BSE 本征值问题简介
 
 在 Tamm–Dancoff 近似（TDA）下，程序求解
 
-```text
-Σ(v'c'k') A(vck,v'c'k') X_S(v'c'k') = Ω_S X_S(vck)
-A = ΔE_QP + K
-ΔE_QP(vck) = E_QP(c,k) − E_QP(v,k)
-```
+$$
+\Sigma(v'c'k') A(vck,v'c'k') X_S(v'c'k') = \Omega_S X_S(vck)
+$$
+
+$$
+A = \Delta E_{QP} + K
+$$
+
+$$
+\Delta E_{QP}(vck) = E_{QP}(c,k) − E_{QP}(v,k)
+$$
 
 `v` 表示选中的占据带，`c` 表示选中的空带，`k` 是 BSE 网格点；`Ω_S` 是第 S 个中性激发的能量，`X_S` 是它在各电子–空穴跃迁上的振幅。矩阵维数为 `N = Nk × nocc × nvirt`。例子 01 的 8 个 k 点、4 条占据带、4 条空带产生 128×128 的 TDA 矩阵。增大网格或能带窗口会增加矩阵维数、内存及对角化工作量；减少输出态数不等于减少输入跃迁空间。
 
-| 通道 | 共振矩阵 A | 含义 |
-| --- | --- | --- |
-| `singlet` | `ΔE_QP + 2V − W` | 单重态；含裸相互作用项与屏蔽吸引项，模板研究的光学通道 |
-| `triplet` | `ΔE_QP − W` | 三重态；从单重态基态出发的电偶极振子强度为零 |
-| `rpa` | `ΔE_QP + 2V` | 此处的 RPA 激发通道，不是运行 LibRPA 的相关能任务 |
-| `ipa` | `ΔE_QP` | 独立粒子近似，用于观察去掉电子–空穴耦合后的跃迁 |
+在 LibBSE 中我们支持多种模式的BSE计算
 
-完整 BSE 还包含共振与反共振的耦合矩阵 B，求解 X/Y 两部分振幅。TDA 忽略这一耦合，因此更适合作为入门流程；其准确性需要针对研究体系检验。动态例子则从静态结果构造一次有效动态核，再求解相同跃迁空间。
+| 选项 | 共振矩阵 A | 含义 |
+| --- | --- | --- |
+| `singlet` | $\Delta E_{QP} + 2V − W$ | 单重态；含裸相互作用项与屏蔽吸引项 |
+| `triplet` | $\Delta E_{QP}− W$ | 三重态；从单重态基态出发的电偶极振子强度为零 |
+| `rpa` | $\Delta E_{QP} + 2V$ | 此处的 RPA 激发通道，不是运行 LibRPA 的相关能任务 |
+| `ipa` | $\Delta E_{QP}$ | 独立粒子近似，用于观察去掉电子–空穴耦合后的跃迁 |
+
+此外 LibBSE 还支持 full BSE 计算，完整 BSE 还包含共振与反共振的耦合矩阵 B，求解 X/Y 两部分振幅。TDA 忽略这一耦合，因此更适合作为入门流程；其准确性需要针对研究体系检验。
+在这些结果之上，我们还实现了 Dynamical BSE 计算。 Dynamical BSE 的计算需要 static BSE 的结果，并通过 Dynamical 修正后的屏蔽库伦作用构造一次有效动态核，再求解相同跃迁空间。
 
 `V` 是裸 Coulomb 相互作用，`W` 是屏蔽后的完整相互作用，`Wc = W − V` 只是相关部分；`χ₀` 是独立粒子响应，仍需与 Coulomb 矩阵组合得到 W。`screened_format` 指定屏蔽数据的类型及其处理方式，输入文件须符合相应格式。
-
-### 1.2 数据流程
-
-```text
-结构、基组、k 网格
-        │
-        ▼
-ABACUS / FHI-aims（DFT 与接口导出）
-        ├── KS 能量/波函数、RI 系数、Coulomb、速度/动量 ─────────┐
-        ▼                                                   │
-LibRPA / FHI-aims（GW）                                      │
-        └── QP 能量 + Wc / W / χ₀ ────────────────────────────┤
-                                                            ▼
-                                             LibBSE → 激发能、振幅、光谱
-```
-
-RI 是 resolution of identity：用辅助基展开轨道乘积，降低相互作用矩阵构造的成本。LibRI 负责相关张量收缩，LibRPA 提供数据读取和响应/屏蔽等基础功能，ScaLAPACK 与 ELPA 负责分布式矩阵计算和本征问题。MPI 分配进程间工作，OpenMP 分配一个进程内的线程工作。
-
-LibBSE 读取已有数据，不负责执行 DFT 或 GW。完整计算流程由 `examples/*/run.sh` 组织，依次调用上游程序、数据转换脚本和 LibBSE。
-
-### 1.3 目录结构与算例
-
-建议将源码放在同一个工作目录中；第 2.2 节用 `LIBBSE_WORKSPACE` 指定该目录：
-
-```text
-$LIBBSE_WORKSPACE/
-├── LibBSE/                    # 当前项目；examples/ 是本教程的输入来源
-│   └── thirdparty/LibRI/include/ # LibBSE 和 LibRPA 共用的 LibRI 头文件
-├── LibRPA/                    # 带所需 reader API 的完整兼容源码
-├── deps/                      # 可选：数学库和 ELPA 源码
-└── tutorial_runs.XXXXXX/       # 第 4 节创建的运行副本
-```
-
-ABACUS 或 FHI-aims 产生 KS 波函数、RI 系数、Coulomb 和速度/动量数据；LibRPA 或 FHI-aims GW 产生准粒子（QP）能量与屏蔽数据；LibBSE 读取这些数据，构造 BSE 矩阵、调用 ELPA 并输出激发能和光谱。
-
-| 例子 | DFT → GW | 屏蔽输入 `screened_format` | 粗网格 → BSE 网格 | BSE |
-| --- | --- | --- | --- | --- |
-| 01 | ABACUS → LibRPA | `librpa_wc` | 2×2×2 | 静态 TDA |
-| 02 | FHI-aims → LibRPA | `librpa_wc` | 2×2×2 | 静态 TDA |
-| 03 | FHI-aims → FHI-aims | `fhi_aims_w` | 2×2×2 | 静态 TDA |
-| 04 | FHI-aims → FHI-aims | `fhi_aims_chi0` | 2×2×2 | 静态 TDA |
-| 05 | FHI-aims → FHI-aims | `fhi_aims_chi0` | 2×2×2 | 有效动态 TDA |
-| 06 | ABACUS → LibRPA | `librpa_chi0` | 2×2×2 | 有效动态 TDA |
-| 07 | ABACUS → LibRPA | `librpa_wc` | 3×3×3 → 4×4×4 | 静态 TDA |
-| 08 | FHI-aims → FHI-aims | `fhi_aims_w` | 3×3×3 → 4×4×4 | 静态 TDA |
-
-建议先完成 01 或 02，确认环境与输出，再依次运行其他例子。每个例子都能独立生成相应的电子结构数据，不需要复制前一个例子的计算结果。
 
 ## 2. 配置编译和运行环境
 

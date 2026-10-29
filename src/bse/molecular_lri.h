@@ -65,6 +65,22 @@ private:
     void build_exact_q_map();
     void build_wavefunctions();
 
+    // LibRI calls this object with the atom pair, q, and the W(q) tensor.
+    struct WBoundaryCorrection
+    {
+        const MolecularLri *owner; // Non-owning; the callback stays inside owner.
+        void operator()(int iatom, int jatom, const KPoint &qfrac,
+                        RI::Tensor<Complex> &w_pair) const{
+            owner->apply_w_boundary_correction(iatom, jatom, qfrac, w_pair);
+        }
+    };
+
+    // Add the boundary correction to w_boundary_pair in place.
+    void apply_w_boundary_correction(
+        int w_boundary_iatom, int w_boundary_jatom,
+        const KPoint &w_boundary_qfrac,
+        RI::Tensor<Complex> &w_boundary_pair) const;
+
     librpa_int::Dataset &dataset_;
     const InputParameters &options_;
     const QuasiparticleBands &qp_;

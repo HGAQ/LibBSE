@@ -1,17 +1,18 @@
-#include "utils/memory_views.h"
 #include "distributed_amplitudes.h"
 
 #include "parameter/parameter.h"
+#include "utils/memory_views.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
-#include <iostream>
 #include <fstream>
 #include <iomanip>
-#include <limits>
-#include <numeric>
+#include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace libbse
 {
@@ -24,6 +25,7 @@ struct PairPartition
     int count = 0;
 };
 
+// Assign contiguous pair ranges; the first remainder ranks get one extra pair.
 PairPartition pair_partition(int dimension, int mpi_size, int rank)
 {
     const int base = dimension / mpi_size;
@@ -43,7 +45,7 @@ int pair_owner(int pair, int dimension, int mpi_size)
     return remainder + (pair - larger_end) / base;
 }
 
-void validate_shape(const DistributedAmplitudes &amplitudes)
+void validate_amplitude_shape(const DistributedAmplitudes &amplitudes)
 {
     if (amplitudes.dimension <= 0 || amplitudes.nstates <= 0
         || amplitudes.first_pair < 0 || amplitudes.local_pairs < 0
@@ -69,20 +71,22 @@ DistributedAmplitudes make_distributed_amplitudes(
     MPI_Comm_size(comm, &mpi_size);
     const PairPartition partition = pair_partition(dimension, mpi_size, rank);
 
-    DistributedAmplitudes result;
-    auto result_memory = watch_memory("distributed_amplitudes.result", result);
-    result.dimension = dimension;
-    result.nstates = nstates;
-    result.first_pair = partition.first;
-    result.local_pairs = partition.count;
-    result.values.assign(static_cast<std::size_t>(nstates) * partition.count,
-                         Complex{});
-    return result;
+    // Store every requested state for this rank's pair range.
+    DistributedAmplitudes local_amplitudes;
+    auto local_amplitudes_memory = watch_memory(
+        "distributed_amplitudes.local_amplitudes", local_amplitudes);
+    local_amplitudes.dimension = dimension;
+    local_amplitudes.nstates = nstates;
+    local_amplitudes.first_pair = partition.first;
+    local_amplitudes.local_pairs = partition.count;
+    local_amplitudes.values.assign(
+        static_cast<std::size_t>(nstates) * partition.count, Complex{});
+    return local_amplitudes;
 }
 
 DistributedAmplitudes redistribute_amplitudes(
     MPI_Comm comm,
-    const std::vector<Complex> &source,
+    const std::vector<Complex> &source_amplitudes,
     const librpa_int::ArrayDesc &source_descriptor,
     int row_offset, int column_offset,
     int dimension, int nstates, int max_batch_elements)
@@ -94,31 +98,39 @@ DistributedAmplitudes redistribute_amplitudes(
         && column_offset >= 0 && column_offset <= source_descriptor.n()
         && dimension <= source_descriptor.m() - row_offset
         && nstates <= source_descriptor.n() - column_offset
-        && source.size() == static_cast<std::size_t>(source_descriptor.lld())
-                              * source_descriptor.n_loc();
+        && source_amplitudes.size() == static_cast<std::size_t>(source_descriptor.lld())
+                                       * source_descriptor.n_loc();
     int all_valid = 0;
     MPI_Allreduce(&valid, &all_valid, 1, MPI_INT, MPI_MIN, comm);
     if (!all_valid)
         throw std::invalid_argument(
             "invalid block-cyclic eigenvector block for redistribution");
 
-    int rank = 0, mpi_size = 1;
+    int rank = 0;
+    int mpi_size = 1;
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &mpi_size);
-    int min_budget = 0, max_budget = 0;
+    int min_budget = 0;
+    int max_budget = 0;
     MPI_Allreduce(&max_batch_elements, &min_budget, 1, MPI_INT, MPI_MIN, comm);
     MPI_Allreduce(&max_batch_elements, &max_budget, 1, MPI_INT, MPI_MAX, comm);
     if (min_budget <= 0 || min_budget != max_budget)
         throw std::invalid_argument("redistribution batch budgets must agree and be positive");
 
-    struct Row
+    // Map local matrix rows to their destination rank and local pair index.
+    struct AmplitudeRow
     {
-        int source_row, destination, pair, destination_pairs;
+        int source_row;
+        int destination;
+        int pair;
+        int destination_pairs;
     };
-    std::vector<Row> rows;
-    auto rows_memory = libbse::watch_memory("distributed_amplitudes.rows", rows);
-    std::vector<int> rows_per_destination(mpi_size, 0);
-    auto rows_per_destination_memory = libbse::watch_memory("distributed_amplitudes.rows_per_destination", rows_per_destination);
+    std::vector<AmplitudeRow> pair_rows;
+    auto pair_rows_memory = libbse::watch_memory(
+        "distributed_amplitudes.pair_rows", pair_rows);
+    std::vector<int> pair_counts_per_destination(mpi_size, 0);
+    auto pair_counts_per_destination_memory = libbse::watch_memory(
+        "distributed_amplitudes.pair_counts_per_destination", pair_counts_per_destination);
     for (int row = 0; row < source_descriptor.m_loc(); ++row)
     {
         const int global_row = source_descriptor.indx_l2g_r(row);
@@ -127,77 +139,92 @@ DistributedAmplitudes redistribute_amplitudes(
         const int pair = global_row - row_offset;
         const int destination = pair_owner(pair, dimension, mpi_size);
         const auto partition = pair_partition(dimension, mpi_size, destination);
-        rows.push_back({row, destination, pair - partition.first, partition.count});
-        ++rows_per_destination[destination];
+        pair_rows.push_back({row, destination, pair - partition.first, partition.count});
+        ++pair_counts_per_destination[destination];
     }
     // The descriptor's local-to-global column mapping is monotone. Cache it
     // once; each local column is packed in exactly one batch.
-    std::vector<std::pair<int, int>> columns;
-    auto columns_memory = libbse::watch_memory("distributed_amplitudes.columns", columns);
+    std::vector<std::pair<int, int>> state_columns;
+    auto state_columns_memory = libbse::watch_memory(
+        "distributed_amplitudes.state_columns", state_columns);
     for (int column = 0; column < source_descriptor.n_loc(); ++column)
     {
         const int state = source_descriptor.indx_l2g_c(column) - column_offset;
-        if (state >= 0 && state < nstates) columns.emplace_back(state, column);
+        if (state >= 0 && state < nstates) state_columns.emplace_back(state, column);
     }
     const auto partition = pair_partition(dimension, mpi_size, rank);
-    const int local_rows = std::max(static_cast<int>(rows.size()), partition.count);
+    const int local_rows = std::max(static_cast<int>(pair_rows.size()), partition.count);
     int global_rows = 0;
     MPI_Allreduce(&local_rows, &global_rows, 1, MPI_INT, MPI_MAX, comm);
     if (max_batch_elements < global_rows)
         throw std::invalid_argument("redistribution batch budget cannot hold one state");
-    // Bound BOTH sends (block-cyclic rows) and receives (pair-block rows).
-    // Every rank uses the same bound, including ranks with no local data, so
-    // collective calls always cover the same state interval. Each batch's
-    // total count and all prefix displacements fit MPI's signed int interface.
+    // Use one batch size on every rank, including ranks with no local data.
+    // Bound both sends and receives so MPI counts and offsets fit signed int.
     const int batch_states = std::min(nstates, max_batch_elements / global_rows);
     if (rank == 0)
         std::cout << "Eigenvector redistribution: " << batch_states
                   << " states/batch, " << max_batch_elements
                   << " elements/rank exchange limit\n";
-    auto result = make_distributed_amplitudes(comm, dimension, nstates);
-    auto result_memory = watch_memory("distributed_amplitudes.result", result);
-    std::vector<int> send_counts(mpi_size), receive_counts(mpi_size);
-    auto send_counts_memory = libbse::watch_memory("distributed_amplitudes.send_counts", send_counts);
-    auto receive_counts_memory = libbse::watch_memory("distributed_amplitudes.receive_counts", receive_counts);
-    std::vector<int> send_offsets(mpi_size), receive_offsets(mpi_size), cursor(mpi_size);
-    auto send_offsets_memory = libbse::watch_memory("distributed_amplitudes.send_offsets", send_offsets);
-    auto receive_offsets_memory = libbse::watch_memory("distributed_amplitudes.receive_offsets", receive_offsets);
-    auto cursor_memory = libbse::watch_memory("distributed_amplitudes.cursor", cursor);
-    // Flat batch buffers avoid the old all-state per-destination vectors and
-    // their extra flattened copies. Capacity is reused, bounded by the budget.
-    std::vector<std::uint64_t> send_indices, receive_indices;
-    auto send_indices_memory = libbse::watch_memory("distributed_amplitudes.send_indices", send_indices);
-    auto receive_indices_memory = libbse::watch_memory("distributed_amplitudes.receive_indices", receive_indices);
-    std::vector<Complex> send_values, receive_values;
-    auto send_values_memory = libbse::watch_memory("distributed_amplitudes.send_values", send_values);
-    auto receive_values_memory = libbse::watch_memory("distributed_amplitudes.receive_values", receive_values);
-    std::vector<unsigned char> assigned;
-    auto assigned_memory = libbse::watch_memory("distributed_amplitudes.assigned", assigned);
-    // Reserve proven maxima once: vector growth must not double capacity past
-    // the exchange budget when column ownership changes between batches.
-    const auto max_send = std::min(static_cast<std::size_t>(batch_states), columns.size())
-                          * rows.size();
-    const auto max_receive = static_cast<std::size_t>(batch_states) * partition.count;
-    send_indices.reserve(max_send);
-    send_values.reserve(max_send);
-    receive_indices.reserve(max_receive);
-    receive_values.reserve(max_receive);
-    assigned.reserve(max_receive);
+    auto local_amplitudes = make_distributed_amplitudes(comm, dimension, nstates);
+    auto local_amplitudes_memory = watch_memory(
+        "distributed_amplitudes.local_amplitudes", local_amplitudes);
+    std::vector<int> send_counts(mpi_size);
+    std::vector<int> receive_counts(mpi_size);
+    auto send_counts_memory = libbse::watch_memory(
+        "distributed_amplitudes.send_counts", send_counts);
+    auto receive_counts_memory = libbse::watch_memory(
+        "distributed_amplitudes.receive_counts", receive_counts);
+    std::vector<int> send_offsets(mpi_size);
+    std::vector<int> receive_offsets(mpi_size);
+    std::vector<int> send_positions(mpi_size);
+    auto send_offsets_memory = libbse::watch_memory(
+        "distributed_amplitudes.send_offsets", send_offsets);
+    auto receive_offsets_memory = libbse::watch_memory(
+        "distributed_amplitudes.receive_offsets", receive_offsets);
+    auto send_positions_memory = libbse::watch_memory(
+        "distributed_amplitudes.send_positions", send_positions);
+    // Reuse flat buffers across batches to limit temporary exchange storage.
+    std::vector<std::uint64_t> send_amplitude_indices;
+    std::vector<std::uint64_t> receive_amplitude_indices;
+    auto send_amplitude_indices_memory = libbse::watch_memory(
+        "distributed_amplitudes.send_amplitude_indices", send_amplitude_indices);
+    auto receive_amplitude_indices_memory = libbse::watch_memory(
+        "distributed_amplitudes.receive_amplitude_indices", receive_amplitude_indices);
+    std::vector<Complex> send_amplitudes;
+    std::vector<Complex> receive_amplitudes;
+    auto send_amplitudes_memory = libbse::watch_memory(
+        "distributed_amplitudes.send_amplitudes", send_amplitudes);
+    auto receive_amplitudes_memory = libbse::watch_memory(
+        "distributed_amplitudes.receive_amplitudes", receive_amplitudes);
+    std::vector<unsigned char> received_amplitude_flags;
+    auto received_amplitude_flags_memory = libbse::watch_memory(
+        "distributed_amplitudes.received_amplitude_flags", received_amplitude_flags);
+    // Reserve once to avoid capacity growth beyond the exchange budget.
+    const auto max_send_elements = std::min(
+        static_cast<std::size_t>(batch_states), state_columns.size()) * pair_rows.size();
+    const auto max_receive_elements = static_cast<std::size_t>(batch_states)
+                                      * partition.count;
+    send_amplitude_indices.reserve(max_send_elements);
+    send_amplitudes.reserve(max_send_elements);
+    receive_amplitude_indices.reserve(max_receive_elements);
+    receive_amplitudes.reserve(max_receive_elements);
+    received_amplitude_flags.reserve(max_receive_elements);
     std::size_t column_begin = 0;
     for (int first = 0; first < nstates; )
     {
         const int count = std::min(batch_states, nstates - first);
         const int end = first + count;
         std::size_t column_end = column_begin;
-        while (column_end < columns.size() && columns[column_end].first < end)
+        while (column_end < state_columns.size() && state_columns[column_end].first < end)
             ++column_end;
         for (int destination = 0; destination < mpi_size; ++destination)
             send_counts[destination] = static_cast<int>(
-                (column_end - column_begin) * rows_per_destination[destination]);
+                (column_end - column_begin) * pair_counts_per_destination[destination]);
         MPI_Alltoall(send_counts.data(), 1, MPI_INT,
                      receive_counts.data(), 1, MPI_INT, comm);
 
-        std::int64_t total_send = 0, total_receive = 0;
+        std::int64_t total_send = 0;
+        std::int64_t total_receive = 0;
         valid = 1;
         for (int process = 0; process < mpi_size; ++process)
         {
@@ -216,54 +243,66 @@ DistributedAmplitudes redistribute_amplitudes(
         valid = valid && total_send <= max_batch_elements
             && total_receive <= max_batch_elements
             && static_cast<std::size_t>(total_receive)
-                   == static_cast<std::size_t>(count) * result.local_pairs;
+                   == static_cast<std::size_t>(count) * local_amplitudes.local_pairs;
         MPI_Allreduce(&valid, &all_valid, 1, MPI_INT, MPI_MIN, comm);
         if (!all_valid)
             throw std::runtime_error("invalid distributed eigenvector batch counts");
 
-        send_indices.resize(static_cast<std::size_t>(total_send));
-        send_values.resize(static_cast<std::size_t>(total_send));
-        receive_indices.resize(static_cast<std::size_t>(total_receive));
-        receive_values.resize(static_cast<std::size_t>(total_receive));
-        cursor = send_offsets;
+        send_amplitude_indices.resize(static_cast<std::size_t>(total_send));
+        send_amplitudes.resize(static_cast<std::size_t>(total_send));
+        receive_amplitude_indices.resize(static_cast<std::size_t>(total_receive));
+        receive_amplitudes.resize(static_cast<std::size_t>(total_receive));
+        send_positions = send_offsets;
         for (std::size_t c = column_begin; c < column_end; ++c)
         {
-            const auto [state, column] = columns[c];
-            for (const auto &row : rows)
+            const auto [state, column] = state_columns[c];
+            for (const auto &row : pair_rows)
             {
-                const int position = cursor[row.destination]++;
-                // Widen BEFORE multiplying: final offsets may exceed INT_MAX
-                // even though this batch's MPI counts and displacements do not.
-                send_indices[position] = amplitude_offset(
+                const int position = send_positions[row.destination]++;
+                // Final array offsets may exceed INT_MAX; use amplitude_offset's
+                // wide multiplication even though each MPI batch fits signed int.
+                send_amplitude_indices[position] = amplitude_offset(
                     state, row.destination_pairs, row.pair);
-                send_values[position] = source[static_cast<std::size_t>(column)
-                                                * source_descriptor.lld() + row.source_row];
+                const auto source_amplitude_index = static_cast<std::size_t>(column)
+                                                    * source_descriptor.lld()
+                                                    + row.source_row;
+                send_amplitudes[position] = source_amplitudes[source_amplitude_index];
             }
         }
-        MPI_Alltoallv(send_indices.data(), send_counts.data(), send_offsets.data(),
-                      MPI_UINT64_T, receive_indices.data(), receive_counts.data(),
+        MPI_Alltoallv(send_amplitude_indices.data(), send_counts.data(),
+                      send_offsets.data(), MPI_UINT64_T,
+                      receive_amplitude_indices.data(), receive_counts.data(),
                       receive_offsets.data(), MPI_UINT64_T, comm);
-        MPI_Alltoallv(send_values.data(), send_counts.data(), send_offsets.data(),
-                      MPI_C_DOUBLE_COMPLEX, receive_values.data(),
+        MPI_Alltoallv(send_amplitudes.data(), send_counts.data(), send_offsets.data(),
+                      MPI_C_DOUBLE_COMPLEX, receive_amplitudes.data(),
                       receive_counts.data(), receive_offsets.data(),
                       MPI_C_DOUBLE_COMPLEX, comm);
 
-        const auto base = amplitude_offset(first, result.local_pairs, 0);
-        assigned.assign(static_cast<std::size_t>(total_receive), 0);
+        const auto batch_amplitude_offset = amplitude_offset(
+            first, local_amplitudes.local_pairs, 0);
+        received_amplitude_flags.assign(static_cast<std::size_t>(total_receive), 0);
         valid = 1;
-        for (std::size_t i = 0; i < receive_indices.size(); ++i)
+        for (std::size_t i = 0; i < receive_amplitude_indices.size(); ++i)
         {
-            const auto index = receive_indices[i];
-            if (index < base || index - base >= assigned.size()
-                || assigned[static_cast<std::size_t>(index - base)] != 0)
+            const auto amplitude_index = receive_amplitude_indices[i];
+            if (amplitude_index < batch_amplitude_offset
+                || amplitude_index - batch_amplitude_offset >= received_amplitude_flags.size())
+            {
+                valid = 0;
+                break;
+            }
+            const auto batch_index = static_cast<std::size_t>(
+                amplitude_index - batch_amplitude_offset);
+            if (received_amplitude_flags[batch_index] != 0)
             {
                 valid = 0;
                 break;
             }
             // Write directly into the final state-major array. The duplicate
             // check is batch-local, not another array spanning all eigenstates.
-            result.values[static_cast<std::size_t>(index)] = receive_values[i];
-            assigned[static_cast<std::size_t>(index - base)] = 1;
+            local_amplitudes.values[static_cast<std::size_t>(amplitude_index)]
+                = receive_amplitudes[i];
+            received_amplitude_flags[batch_index] = 1;
         }
         MPI_Allreduce(&valid, &all_valid, 1, MPI_INT, MPI_MIN, comm);
         if (!all_valid)
@@ -271,14 +310,15 @@ DistributedAmplitudes redistribute_amplitudes(
         column_begin = column_end;
         first = end;
     }
-    return result;
+    return local_amplitudes;
 }
 
 void write_distributed_amplitudes(
     const std::filesystem::path &file,
     const DistributedAmplitudes &amplitudes)
 {
-    validate_shape(amplitudes);
+    // Each rank writes its own file, one state per line.
+    validate_amplitude_shape(amplitudes);
     std::ofstream output(file);
     if (!output) throw std::runtime_error("cannot write " + file.string());
     output << std::scientific << std::setprecision(8);
@@ -287,10 +327,10 @@ void write_distributed_amplitudes(
         for (int local_pair = 0; local_pair < amplitudes.local_pairs;
              ++local_pair)
         {
-            Complex value = amplitudes(state, local_pair);
-            if (std::abs(value) <= PARAM.constants.output_zero_tolerance)
-                value = Complex{};
-            output << value << ' ';
+            Complex amplitude_value = amplitudes(state, local_pair);
+            if (std::abs(amplitude_value) <= PARAM.constants.output_zero_tolerance)
+                amplitude_value = Complex{};
+            output << amplitude_value << ' ';
         }
         output << '\n';
     }
@@ -301,21 +341,25 @@ DistributedAmplitudes read_distributed_amplitudes(
     const std::filesystem::path &file,
     MPI_Comm comm, int dimension, int nstates)
 {
-    auto result = make_distributed_amplitudes(comm, dimension, nstates);
-    auto result_memory = watch_memory("distributed_amplitudes.result", result);
+    // Restart files must match the current state count and pair partition.
+    auto local_amplitudes = make_distributed_amplitudes(comm, dimension, nstates);
+    auto local_amplitudes_memory = watch_memory(
+        "distributed_amplitudes.local_amplitudes", local_amplitudes);
     std::ifstream input(file);
     if (!input) throw std::runtime_error("cannot read " + file.string());
-    for (Complex &value : result.values)
-        if (!(input >> value))
+    for (Complex &amplitude_value : local_amplitudes.values)
+    {
+        if (!(input >> amplitude_value))
             throw std::runtime_error(
                 "truncated or MPI-incompatible excitation-amplitude file "
                 + file.string());
-    Complex extra;
-    if (input >> extra)
+    }
+    Complex extra_amplitude;
+    if (input >> extra_amplitude)
         throw std::runtime_error(
             "oversized or MPI-incompatible excitation-amplitude file "
             + file.string());
-    return result;
+    return local_amplitudes;
 }
 
 } // namespace libbse
