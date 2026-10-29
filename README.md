@@ -1,4 +1,6 @@
-![LibBSE Logo](docs/Logo.png)
+<p align="center">
+  <img src="docs/Logo.png" alt="LibBSE Logo" width="429">
+</p>
 
 # LibBSE
 
