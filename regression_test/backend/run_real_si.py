@@ -61,6 +61,23 @@ def options_for(fixture, definition):
     return options
 
 
+def print_eigenstate_matches(title, eigenpair_metrics):
+    print(f'\nEigenstate comparison: {title}', flush=True)
+    print('Nondegenerate: Match = normalized |<reference|candidate>|^2.', flush=True)
+    print('Degenerate: Match = smallest squared singular overlap of the two subspaces;', flush=True)
+    print('the same group score is repeated for its members, not individual state overlaps.', flush=True)
+    print(f"Degeneracy grouping: {eigenpair_metrics['degeneracy_eV']:.1e} eV; "
+          f"energy tolerance: {eigenpair_metrics['energy_atol_eV']:.1e} eV.", flush=True)
+    print(' State    E_ref (eV)    E_test (eV)       Delta (eV)       Match (%)    sin(theta)   Group', flush=True)
+    for state in eigenpair_metrics['states']:
+        group = str(state['group_first']) if state['group_first'] == state['group_last'] else f"{state['group_first']}-{state['group_last']}"
+        print(f"{state['state']:6d} {state['reference_energy_eV']:13.8f} "
+              f"{state['candidate_energy_eV']:14.8f} {state['energy_difference_eV']:+16.7e} "
+              f"{100*state['match_squared']:15.9f} {state['subspace_sine']:13.5e}   {group}", flush=True)
+    print(f"Eigenpair check: {'PASS' if eigenpair_metrics['pass'] else 'FAIL'}; "
+          f"max |Delta E| = {eigenpair_metrics['max_energy_error_eV']:.7e} eV", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--executable', type=Path, required=True)
@@ -79,6 +96,7 @@ def main():
     reference = work / 'references' / definition['reference']
     requires_screening = 'chi0' in options['screened_format']
     metrics = compare_directories(reference, output, requires_screening)
+    print_eigenstate_matches(args.case + ' vs frozen reference', metrics['eigenpairs'])
     energies, amplitudes = read_eigenpairs(output)
     dimension = 8 * int(options['nocc']) * int(options['nvirt'])
     if len(energies) != dimension or amplitudes.shape != (dimension, dimension):
@@ -102,8 +120,13 @@ def main():
         replay_energies, replay_amplitudes = read_eigenpairs(work / 'replay/libbse.d')
         metrics['W_replay'] = compare_eigenpairs(energies, amplitudes, replay_energies, replay_amplitudes)
         metrics['pass'] &= metrics['W_replay']['pass']
+        print_eigenstate_matches('W replay vs chi0/dynamic path', metrics['W_replay'])
     (work / 'comparison.txt').write_text(pprint.pformat(metrics) + '\n')
-    print(pprint.pformat({'case': args.case, 'work': str(work), **metrics}))
+    summary_metrics = dict(metrics)
+    for key in ('eigenpairs', 'W_replay'):
+        if key in summary_metrics:
+            summary_metrics[key] = {name: value for name, value in metrics[key].items() if name != 'states'}
+    print(pprint.pformat({'case': args.case, 'work': str(work), **summary_metrics}))
     return 0 if metrics['pass'] else 1
 
 

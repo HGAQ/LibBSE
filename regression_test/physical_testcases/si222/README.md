@@ -51,3 +51,9 @@ ctest --test-dir build -L real_si --output-on-failure
 ```
 
 归档校验值在 `archives.txt`。输入内部包含逐文件校验及生产程序哈希。更新参考时应先独立审核输入、源码和数值变化，再显式重新生成归档并更新校验值；不能因测试失败直接接受新结果。
+
+## Eigenstate 输出
+
+GitHub 的 Physical Cases 使用 CTest verbose 输出，即使通过也列出每个态的 `E_ref`、`E_test`、`Delta`（eV）、`Match (%)`、`sin(theta)` 和简并分组。非简并态的 Match 是归一化复振幅重叠模方；简并组使用两个子空间重叠矩阵的最小奇异值平方，并在组内各行重复显示。组内能量按排序列出，不宣称存在唯一的逐态对应。
+
+接近 100% 时百分数可能因显示精度而相同，`sin(theta)` 保留科学计数法供判断微小偏差。分组及通过阈值保持不变；逐态记录也保存在 `comparison.txt`。χ₀／dynamic 路径还输出 W 重放的态匹配表。

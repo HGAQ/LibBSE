@@ -46,6 +46,7 @@ def compare_eigenpairs(reference_energies,reference_amplitudes,candidate_energie
     max_subspace_error=0.
     max_aligned_error=0.
     group_count=0
+    state_matches=[]
     group_begin=0
     for group_end in range(1,len(reference_energies)+1):
         if group_end<len(reference_energies) and reference_energies[group_end]-reference_energies[group_begin]<=degeneracy_ev:
@@ -62,12 +63,22 @@ def compare_eigenpairs(reference_energies,reference_amplitudes,candidate_energie
             overlap_value=np.vdot(reference_group[:,0],candidate_group[:,0])
             phase_factor=overlap_value.conjugate()/abs(overlap_value) if abs(overlap_value)>0 else 1.
             max_aligned_error=max(max_aligned_error,float(np.linalg.norm(candidate_group[:,0]*phase_factor-reference_group[:,0])))
+        # Singleton overlap and degenerate subspace fidelity share this invariant.
+        match_squared=min(1.,float(overlap_singular.min())**2)
+        for state_index in range(group_begin,group_end):
+            state_matches.append({
+                'state':state_index+1,
+                'reference_energy_eV':float(reference_energies[state_index]),
+                'candidate_energy_eV':float(candidate_energies[state_index]),
+                'energy_difference_eV':float(candidate_energies[state_index]-reference_energies[state_index]),
+                'group_first':group_begin+1,'group_last':group_end,
+                'match_squared':match_squared,'subspace_sine':subspace_error})
         group_count+=1
         group_begin=group_end
     return {'pass':max_energy_error<=energy_atol and max_subspace_error<=amplitude_atol and max_aligned_error<=amplitude_atol and normalization_error<=amplitude_atol and orthogonality_error<=amplitude_atol,
         'max_energy_error_eV':max_energy_error,'max_subspace_sine':max_subspace_error,
         'max_phase_aligned_amplitude_l2':max_aligned_error,'max_normalization_error':normalization_error,
-        'max_orthogonality_error':orthogonality_error,'groups':group_count,'energy_atol_eV':energy_atol,'amplitude_atol':amplitude_atol,'degeneracy_eV':degeneracy_ev}
+        'max_orthogonality_error':orthogonality_error,'groups':group_count,'energy_atol_eV':energy_atol,'amplitude_atol':amplitude_atol,'degeneracy_eV':degeneracy_ev,'states':state_matches}
 
 def read_screening(output_root):
     screening_records={}

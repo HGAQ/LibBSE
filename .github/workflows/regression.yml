@@ -69,7 +69,7 @@ jobs:
         if: ${{ !cancelled() && steps.compile.outcome == 'success' }}
         run: |
           set -euo pipefail
-          ctest --test-dir build-ci -L real_si --parallel 1 --no-tests=error \
+          ctest --test-dir build-ci -L real_si --verbose --parallel 1 --no-tests=error \
             --output-on-failure --output-junit real-si.xml 2>&1 | tee build-ci/real-si.log
       - name: Postrun
         if: always()
