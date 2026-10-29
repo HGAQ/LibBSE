@@ -1,0 +1,55 @@
+[native_w]
+reference = "native_w"
+ranks = 1
+[native_w.options]
+screened_format = "fhi_aims_w"
+
+[chi0_headwing]
+reference = "chi0_headwing"
+ranks = 1
+[chi0_headwing.options]
+screened_format = "fhi_aims_chi0"
+chi0_headwing = "true"
+
+[native_w_1v1c]
+reference = "native_w_1v1c"
+ranks = 1
+[native_w_1v1c.options]
+screened_format = "fhi_aims_w"
+nocc = "1"
+nvirt = "1"
+
+[dynamic]
+reference = "dynamic"
+ranks = 1
+[dynamic.options]
+screened_format = "fhi_aims_chi0"
+chi0_headwing = "true"
+bse_plasma_energy_ev = "15"
+
+[native_w_unbatched]
+reference = "native_w"
+ranks = 1
+[native_w_unbatched.options]
+screened_format = "fhi_aims_w"
+bse_memory_optimized = "false"
+
+[native_w_mpi2]
+reference = "native_w"
+ranks = 2
+[native_w_mpi2.options]
+screened_format = "fhi_aims_w"
+
+[chi0_headwing_mpi2]
+reference = "chi0_headwing"
+ranks = 2
+[chi0_headwing_mpi2.options]
+screened_format = "fhi_aims_chi0"
+chi0_headwing = "true"
+
+[boundary]
+reference = "native_w"
+ranks = 1
+[boundary.options]
+screened_format = "fhi_aims_w"
+bse_w_boundary_average = "true"

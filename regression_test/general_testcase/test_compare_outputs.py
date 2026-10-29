@@ -1,5 +1,8 @@
 """Check that regression comparisons accept gauge freedom and detect real changes."""
 import unittest
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 import numpy as np
 from compare_outputs import compare_eigenpairs,compare_screening
 

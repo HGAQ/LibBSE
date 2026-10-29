@@ -1,0 +1,61 @@
+[[cases]]
+name = "abacus_wc_coarse"
+template = "01_abacus_librpa_libbse"
+feature = "Wc + QPE -> BSE, coarse grid"
+[cases.overrides]
+
+[[cases]]
+name = "aims_wc_coarse"
+template = "02_fhiaims_librpa_libbse"
+feature = "AIMS states + LibRPA Wc + QPE -> BSE"
+[cases.overrides]
+
+[[cases]]
+name = "aims_w_coarse"
+template = "03_fhiaims_fhiaims_libbse_Wmatrix"
+feature = "native full W + QPE -> BSE, coarse grid"
+[cases.overrides]
+
+[[cases]]
+name = "aims_chi0_coarse"
+template = "04_fhiaims_fhiaims_libbse_chi0"
+feature = "chi0 + QPE -> W -> BSE, coarse grid"
+[cases.overrides]
+
+[[cases]]
+name = "aims_dynamic"
+template = "05_fhiaims_fhiaims_libbse_dynamics"
+feature = "dynamic W + BSE, plasma 15 eV, computed binding"
+[cases.overrides]
+
+[[cases]]
+name = "abacus_dynamic"
+template = "06_abacus_librpa_libbse_dynamics"
+feature = "dynamic W + BSE, plasma 15 eV, computed binding"
+[cases.overrides]
+
+[[cases]]
+name = "abacus_w_interpolate"
+template = "07_abacus_librpa_libbse_interpolate_333_444"
+feature = "coarse W 333 -> fine BSE 444"
+[cases.overrides]
+
+[[cases]]
+name = "aims_w_interpolate"
+template = "08_fhiaims_fhiaims_libbse_interpolate_333_444"
+feature = "coarse W 333 -> fine BSE 444"
+[cases.overrides]
+
+[[cases]]
+name = "abacus_chi0_coarse"
+template = "06_abacus_librpa_libbse_dynamics"
+feature = "chi0 + QPE -> W -> static BSE"
+[cases.overrides]
+bse_plasma_energy_ev = "0"
+
+[[cases]]
+name = "aims_dynamic_p20"
+template = "05_fhiaims_fhiaims_libbse_dynamics"
+feature = "dynamic parameter variation, plasma 20 eV"
+[cases.overrides]
+bse_plasma_energy_ev = "20"

@@ -1,6 +1,8 @@
+> 历史记录：以下是目录重组和真实 Si CI 加入之前的验证结果，不能作为当前 GitHub 状态。
+
 # 2026-10-29 本地验证
 
-本轮采用 [模板算例](../../../3_LibBSE_templatetest)，将原 `tests` 目录迁到 `regression_test`，保留已有测试。`src` 文件逐个 SHA-256 核对，与本轮开始时一致；已有工作区修改未撤销。
+本轮采用 [模板算例](../../../../3_LibBSE_templatetest)，将原 `tests` 目录迁到 `regression_test`，保留已有测试。`src` 文件逐个 SHA-256 核对，与本轮开始时一致；已有工作区修改未撤销。
 
 ## 实际执行结果
 
@@ -29,11 +31,6 @@
 
 GitHub 远程工作流尚未部署；测试目录、可选 CTest 集成入口、JUnit 报告已准备好。外部大文件与冻结参考程序需要在运行环境中另行提供。
 
-## 详细记录
+## 历史记录位置
 
-- [使用方法与容差](README.md)
-- [逐项集成结果](../../../regression_work_20261029/INTEGRATION_RESULTS.md)
-- [集成 JUnit](../../../regression_work_20261029/integration.xml)
-- [快速 CTest JUnit](../../../regression_work_20261029/final_ctest.xml)
-- [MPI 进程数对照](../../../regression_work_20261029/mpi_bound/abacus_chi0_coarse/comparison.json)
-- [历史 ABACUS 进一步检查](../../../regression_work_20261029/historical_abacus_diagnostic.json)
+对应本地工作目录为 `regression_work_20261029`，其中保存原始日志、JUnit 和逐项比较报告；这些历史文件未随仓库发布。当前运行说明见 [测试入口](../README.md)。

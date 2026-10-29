@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 import numpy as np
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'tools'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]/'tools'))
 from aims_w_to_librpa import complete_inverse, to_real_space
 for n in (3,4):
     mesh=(n,1,1)

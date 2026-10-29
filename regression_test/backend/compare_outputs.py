@@ -1,6 +1,9 @@
 """Compare TDA eigenpairs modulo phase and rotations within degenerate groups."""
 from pathlib import Path
-import argparse,json,re
+import ast
+import pprint
+import tomllib
+import argparse,re
 import numpy as np
 RY_EV=13.605693122994
 
@@ -92,7 +95,7 @@ def compare_screening(reference_screening,candidate_screening):
         candidate_w=candidate_sqrt@candidate_inverse@candidate_sqrt
         if not np.isfinite(candidate_w).all(): raise ValueError('Nonfinite W')
         relative_error=float(np.linalg.norm(candidate_w-reference_w)/max(np.linalg.norm(reference_w),1e-30))
-        screening_metrics.append({'q_frequency':list(screening_key),'relative_W_error':relative_error})
+        screening_metrics.append({'q_frequency':[float(component) for component in screening_key],'relative_W_error':relative_error})
     return {'pass':all(item['relative_W_error']<=2e-8 for item in screening_metrics),'q_count':len(screening_metrics),'matrices':screening_metrics,'relative_tolerance':2e-8}
 
 def compare_directories(reference_root,candidate_root,require_screening=False):
@@ -113,5 +116,5 @@ if __name__=='__main__':
     parser.add_argument('--require-screening',action='store_true')
     args=parser.parse_args()
     comparison_metrics=compare_directories(args.reference,args.candidate,args.require_screening)
-    print(json.dumps(comparison_metrics,indent=2))
+    print(pprint.pformat(comparison_metrics))
     raise SystemExit(0 if comparison_metrics['pass'] else 1)

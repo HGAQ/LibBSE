@@ -98,16 +98,16 @@ if(LIBBSE_BUILD_TESTING)
     COMMAND $<TARGET_FILE:LibBSE> unexpected_argument)
   set_tests_properties(LibBSE_reject_command_line PROPERTIES WILL_FAIL TRUE)
 
-  add_executable(test_velocity_gauge regression_test/test_velocity_gauge.cpp)
+  add_executable(test_velocity_gauge regression_test/general_testcase/test_velocity_gauge.cpp)
   target_link_libraries(test_velocity_gauge PRIVATE libbse_core)
   add_test(NAME LibBSE_velocity_gauge COMMAND test_velocity_gauge)
 
-  add_executable(test_parameter regression_test/test_parameter.cpp)
+  add_executable(test_parameter regression_test/general_testcase/test_parameter.cpp)
   target_link_libraries(test_parameter PRIVATE libbse_core)
   add_test(NAME LibBSE_parameter COMMAND test_parameter)
 
   add_executable(test_profiler
-    regression_test/test_profiler.cpp
+    regression_test/general_testcase/test_profiler.cpp
     src/utils/profiler.cpp
     src/utils/memory.cpp)
   target_link_libraries(test_profiler PRIVATE MPI::MPI_CXX)
@@ -116,7 +116,7 @@ if(LIBBSE_BUILD_TESTING)
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   add_test(NAME LibBSE_profiler COMMAND test_profiler)
 
-  add_executable(test_memory regression_test/test_memory.cpp)
+  add_executable(test_memory regression_test/general_testcase/test_memory.cpp)
   target_link_libraries(test_memory PRIVATE libbse_core)
   foreach(ranks IN ITEMS 1 2 4)
     add_test(NAME LibBSE_memory_${ranks}
@@ -124,7 +124,7 @@ if(LIBBSE_BUILD_TESTING)
     set_tests_properties(LibBSE_memory_${ranks} PROPERTIES TIMEOUT 30)
   endforeach()
 
-  add_executable(test_spectrum_mpi regression_test/test_spectrum_mpi.cpp)
+  add_executable(test_spectrum_mpi regression_test/general_testcase/test_spectrum_mpi.cpp)
   target_link_libraries(test_spectrum_mpi PRIVATE libbse_core)
   add_test(NAME LibBSE_spectrum_mpi
     COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
@@ -132,7 +132,7 @@ if(LIBBSE_BUILD_TESTING)
   set_tests_properties(LibBSE_spectrum_mpi PROPERTIES
     ENVIRONMENT "OMP_NUM_THREADS=2")
 
-  add_executable(test_chi0_screening regression_test/test_chi0_screening.cpp)
+  add_executable(test_chi0_screening regression_test/general_testcase/test_chi0_screening.cpp)
   target_link_libraries(test_chi0_screening PRIVATE libbse_core)
   add_test(NAME LibBSE_chi0_screening_serial COMMAND test_chi0_screening)
   add_test(NAME LibBSE_chi0_screening_mpi
@@ -140,8 +140,8 @@ if(LIBBSE_BUILD_TESTING)
   set_tests_properties(LibBSE_chi0_screening_serial LibBSE_chi0_screening_mpi
     PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
 
-  add_executable(test_aims_screened regression_test/test_aims_screened.cpp)
-  add_executable(test_uniform_qmesh regression_test/test_uniform_qmesh.cpp)
+  add_executable(test_aims_screened regression_test/general_testcase/test_aims_screened.cpp)
+  add_executable(test_uniform_qmesh regression_test/general_testcase/test_uniform_qmesh.cpp)
   target_include_directories(test_uniform_qmesh PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME LibBSE_uniform_qmesh COMMAND test_uniform_qmesh)
   target_link_libraries(test_aims_screened PRIVATE libbse_core)
@@ -151,19 +151,19 @@ if(LIBBSE_BUILD_TESTING)
   set_tests_properties(LibBSE_aims_screened_serial LibBSE_aims_screened_mpi
     PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=2")
 
-  add_executable(test_bse_files regression_test/test_bse_files.cpp)
+  add_executable(test_bse_files regression_test/general_testcase/test_bse_files.cpp)
   target_link_libraries(test_bse_files PRIVATE libbse_core)
   add_test(NAME LibBSE_bse_files COMMAND test_bse_files)
 
   add_test(NAME LibBSE_aims_w_converter
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/test_aims_w_to_librpa.py)
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/general_testcase/test_aims_w_to_librpa.py)
 
   add_test(NAME LibBSE_aims_mommat_converter
     COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/test_aims_mommat_to_velocity.py)
+            ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/general_testcase/test_aims_mommat_to_velocity.py)
 
   add_executable(test_molecular_lri_comm
-    regression_test/test_molecular_lri_comm.cpp)
+    regression_test/general_testcase/test_molecular_lri_comm.cpp)
   target_link_libraries(test_molecular_lri_comm PRIVATE libbse_core)
   add_test(NAME LibBSE_molecular_lri_comm_mpi
     COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
@@ -171,7 +171,7 @@ if(LIBBSE_BUILD_TESTING)
   set_tests_properties(LibBSE_molecular_lri_comm_mpi PROPERTIES
     ENVIRONMENT "OMP_NUM_THREADS=2")
 
-  add_executable(test_elpa_solver regression_test/test_elpa_solver.cpp)
+  add_executable(test_elpa_solver regression_test/general_testcase/test_elpa_solver.cpp)
   target_link_libraries(test_elpa_solver PRIVATE libbse_core)
   add_test(NAME LibBSE_elpa_solver_serial COMMAND test_elpa_solver)
   add_test(NAME LibBSE_elpa_solver_mpi
@@ -182,7 +182,7 @@ if(LIBBSE_BUILD_TESTING)
 endif()
 
 if(LIBBSE_BUILD_TESTING)
-  add_executable(test_spectrum_block_cyclic regression_test/test_spectrum_block_cyclic.cpp)
+  add_executable(test_spectrum_block_cyclic regression_test/general_testcase/test_spectrum_block_cyclic.cpp)
   target_link_libraries(test_spectrum_block_cyclic PRIVATE libbse_core)
   foreach(ranks IN ITEMS 1 2 3 4)
     add_test(NAME LibBSE_block_cyclic_optics_${ranks}
@@ -195,14 +195,14 @@ endif()
 
 if(LIBBSE_BUILD_TESTING)
   # Needs real producer data; run explicitly from an integration-case directory.
-  add_executable(test_ri_streaming regression_test/test_ri_streaming.cpp)
+  add_executable(test_ri_streaming regression_test/general_testcase/test_ri_streaming.cpp)
   target_link_libraries(test_ri_streaming PRIVATE libbse_core)
 endif()
 
 if(LIBBSE_BUILD_TESTING)
   add_test(NAME LibBSE_regression_comparator
     COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/test_compare_outputs.py)
+            ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/general_testcase/test_compare_outputs.py)
   set_tests_properties(LibBSE_regression_comparator PROPERTIES
     ENVIRONMENT "OPENBLAS_NUM_THREADS=1")
 endif()
@@ -220,7 +220,7 @@ if(LIBBSE_BUILD_TESTING AND LIBBSE_REGRESSION_FIXTURES)
       abacus_chi0_coarse aims_dynamic_p20)
     add_test(NAME LibBSE_regression_${regression_case}
       COMMAND ${Python3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/run_case.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_case.py
         --fixtures ${LIBBSE_REGRESSION_FIXTURES}
         --reference-exe ${LIBBSE_REGRESSION_REFERENCE_EXE}
         --candidate-exe $<TARGET_FILE:LibBSE>
@@ -229,5 +229,19 @@ if(LIBBSE_BUILD_TESTING AND LIBBSE_REGRESSION_FIXTURES)
     set_tests_properties(LibBSE_regression_${regression_case} PROPERTIES
       LABELS "regression;integration" PROCESSORS 2 TIMEOUT 7200
       ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
+  endforeach()
+endif()
+
+option(LIBBSE_TEST_REAL_SI "Register bundled Si 222 2v2c regression tests" ON)
+if(LIBBSE_BUILD_TESTING AND LIBBSE_TEST_REAL_SI)
+  foreach(si_case IN ITEMS native_w chi0_headwing native_w_1v1c dynamic
+      native_w_unbatched native_w_mpi2 chi0_headwing_mpi2 boundary)
+    add_test(NAME LibBSE_real_Si222_${si_case}
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_real_si.py
+        --executable $<TARGET_FILE:LibBSE>
+        --work ${CMAKE_CURRENT_BINARY_DIR}/real_si_runs --case ${si_case})
+    set_tests_properties(LibBSE_real_Si222_${si_case} PROPERTIES
+      LABELS "real_si" PROCESSORS 2 TIMEOUT 1200
+      ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1")
   endforeach()
 endif()

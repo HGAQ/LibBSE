@@ -20,11 +20,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -r regression_test/requirements.txt
-      - run: python regression_test/test_compare_outputs.py
+      - run: python -m pip install -r regression_test/backend/requirements.txt
+      - run: python regression_test/general_testcase/test_compare_outputs.py
 
   build-and-test:
-    name: Build and fast tests
+    name: Build and regression tests
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -50,9 +50,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y g++ gfortran cmake make pkg-config libtool \
             libopenmpi-dev openmpi-bin libopenblas-dev libscalapack-openmpi-dev
-          python -m pip install -r regression_test/requirements.txt
+          python -m pip install -r regression_test/backend/requirements.txt
       - name: Build ELPA with skew support
-        run: bash regression_test/build_ci_elpa.sh
+        run: bash regression_test/backend/build_ci_elpa.sh
       - name: Compile LibBSE and run fast tests
         run: |
           set -euo pipefail
@@ -70,13 +70,18 @@ jobs:
             -DLIBBSE_REGRESSION_FIXTURES= \
             -DLIBBSE_REGRESSION_REFERENCE_EXE= 2>&1 | tee build-ci/configure.log
           cmake --build build-ci --parallel 2 2>&1 | tee build-ci/build.log
-          ctest --test-dir build-ci -LE integration --parallel 1 --no-tests=error \
+          ctest --test-dir build-ci -LE "integration|real_si" --parallel 1 --no-tests=error \
             --output-on-failure --output-junit regression.xml 2>&1 | tee build-ci/ctest.log
+      - name: Real Si 222, 2v2c regression
+        run: |
+          set -euo pipefail
+          ctest --test-dir build-ci -L real_si --parallel 1 --no-tests=error \
+            --output-on-failure --output-junit real-si.xml 2>&1 | tee build-ci/real-si.log
       - name: Save test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fast-tests-${{ github.sha }}-${{ github.run_attempt }}
+          name: regression-${{ github.sha }}-${{ github.run_attempt }}
           retention-days: 14
           if-no-files-found: warn
           path: |
@@ -85,3 +90,6 @@ jobs:
             build-ci/CMakeCache.txt
             build-ci/Testing/Temporary/LastTest.log
             ci-deps/elpa-build/config.log
+            build-ci/real_si_runs/*/comparison.txt
+            build-ci/real_si_runs/*/candidate/libbse.out
+            build-ci/real_si_runs/*/candidate/libbse.err

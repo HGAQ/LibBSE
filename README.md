@@ -386,7 +386,7 @@ Amplitude files are written and read independently by each MPI rank. Spectrum
 restart calculations are expected to use the same number of MPI ranks as the
 ELPA calculation that produced these files.
 
-The unit-test inventory is documented in [`regression_test/UNIT_TESTS.md`](regression_test/UNIT_TESTS.md).
+The unit-test inventory is documented in [`regression_test/doc/UNIT_TESTS.md`](regression_test/doc/UNIT_TESTS.md).
 
 ### TDA memory optimization
 

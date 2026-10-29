@@ -358,7 +358,7 @@ export MKL_NUM_THREADS=1
 ctest --test-dir "$LIBBSE_SRC/build_tutorial" --output-on-failure
 ```
 
-测试包含双进程 MPI、ELPA、输入参数、文件读取和 Python 转换器检查，通过标准为 CTest 全部通过。测试内容见 [regression_test/UNIT_TESTS.md](../regression_test/UNIT_TESTS.md)。若 MPI 在登录节点无法启动，应在计算资源中重试。
+测试包含双进程 MPI、ELPA、输入参数、文件读取和 Python 转换器检查，通过标准为 CTest 全部通过。测试内容见 [regression_test/doc/UNIT_TESTS.md](../regression_test/doc/UNIT_TESTS.md)。若 MPI 在登录节点无法启动，应在计算资源中重试。
 
 ## 4. 运行准备
 

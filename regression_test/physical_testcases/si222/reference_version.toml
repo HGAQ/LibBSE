@@ -1,0 +1,11 @@
+libbse_commit = "2b727c08a2ca220709dbf0fbe55f19df99235da7"
+libbse_executable_sha256 = "b1b730a82c55bde90195eb00ddf4d854238f65163e57ea7c79ba6bbbc9797ede"
+librpa_commit = "7551e28df26175167eb2415e5dbbaf5bec7d1ce6"
+compiler = "GCC 15.2.0"
+mpi = "OpenMPI 5.0.9"
+elpa = "2024.05.001"
+auxiliary_functions = 218
+orbital_functions = 50
+k_grid = [2, 2, 2]
+reference_mpi_ranks = 1
+reference_omp_threads = 1

@@ -1,6 +1,9 @@
 """Produce a strict integration summary and JUnit without promoting historical baselines."""
 from pathlib import Path
-import argparse,json,xml.etree.ElementTree as ET
+import ast
+import pprint
+import tomllib
+import argparse,xml.etree.ElementTree as ET
 from compare_outputs import compare_directories,read_eigenpairs,compare_eigenpairs
 
 def main():
@@ -10,7 +13,7 @@ def main():
     args=parser.parse_args()
     report_root=args.output or args.work
     report_root.mkdir(parents=True,exist_ok=True)
-    case_catalog=json.loads((Path(__file__).parent/'cases.json').read_text())['cases']
+    case_catalog=tomllib.loads((Path(__file__).resolve().parents[1]/'physical_testcases/templates.toml').read_text())['cases']
     report_records=[]
     junit_root=ET.Element('testsuite',name='LibBSE integration regression',tests=str(len(case_catalog)))
     report_lines=['# LibBSE integration regression results','',
@@ -22,7 +25,7 @@ def main():
         case_root=args.work/case_name
         junit_case=ET.SubElement(junit_root,'testcase',name=case_name,classname='LibBSE.integration')
         try:
-            stored_comparison=json.loads((case_root/'comparison.json').read_text())
+            stored_comparison=ast.literal_eval((case_root/'comparison.txt').read_text())
             require_screening='chi0' in (case_root/'candidate/libbse.in').read_text()
             comparison_metrics=compare_directories(case_root/'reference/libbse.d',case_root/'candidate/libbse.d',require_screening)
             if (case_root/'replay').exists():
@@ -51,7 +54,7 @@ def main():
     failures=sum(item['status']!='PASS' for item in report_records)
     junit_root.set('failures',str(failures))
     ET.ElementTree(junit_root).write(report_root/'integration.xml',encoding='utf-8',xml_declaration=True)
-    (report_root/'integration_summary.json').write_text(json.dumps(report_records,indent=2)+'\n')
+    (report_root/'integration_summary.txt').write_text(pprint.pformat(report_records)+'\n')
     report_lines+=['','W metrics are populated for chi0 cases. Fixed-W cases test BSE consumption of identical input W; that path does not independently reconstruct W.', '',
                    'Historical differences are reported separately and do not automatically fail the migration comparison. AIMS and ABACUS are independent producers, not interchangeable numerical references.']
     (report_root/'INTEGRATION_RESULTS.md').write_text('\n'.join(report_lines)+'\n')

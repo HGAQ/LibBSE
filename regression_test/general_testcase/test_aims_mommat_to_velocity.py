@@ -10,7 +10,7 @@ import h5py
 import numpy as np
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "aims_mommat_to_velocity.py"
 SPEC = importlib.util.spec_from_file_location("aims_mommat_to_velocity", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None

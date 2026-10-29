@@ -1,6 +1,9 @@
 """Run a fixed-input baseline/candidate comparison without modifying fixtures."""
 from pathlib import Path
-import argparse,hashlib,json,os,subprocess,time
+import ast
+import pprint
+import tomllib
+import argparse,hashlib,os,subprocess,time
 import numpy as np
 from compare_outputs import compare_directories,read_eigenpairs,compare_eigenpairs,read_screening
 
@@ -38,7 +41,7 @@ def run_bse(executable,case_root,input_options,ranks):
         subprocess.run(command,cwd=case_root,stdout=stdout,stderr=stderr,check=True,timeout=3600)
     if 'Time of Total LibBSE execution' not in (case_root/'libbse.out').read_text():
         raise RuntimeError('Missing successful LibBSE completion')
-    (case_root/'execution.json').write_text(json.dumps({'executable_sha256':file_digest(executable),'ranks':ranks,'elapsed_seconds':time.monotonic()-run_start,'command':command},indent=2)+'\n')
+    (case_root/'execution.txt').write_text(pprint.pformat({'executable_sha256':file_digest(executable),'ranks':ranks,'elapsed_seconds':time.monotonic()-run_start,'command':command})+'\n')
 
 def screening_to_cache(output_root,cache_root,plasma_energy):
     screening_records=read_screening(output_root)
@@ -91,7 +94,7 @@ def main():
     parser.add_argument('--reference-ranks',type=int,default=1)
     parser.add_argument('--candidate-ranks',type=int,default=1)
     args=parser.parse_args()
-    case_catalog=json.loads((Path(__file__).parent/'cases.json').read_text())['cases']
+    case_catalog=tomllib.loads((Path(__file__).resolve().parents[1]/'physical_testcases/templates.toml').read_text())['cases']
     case_definition=next(item for item in case_catalog if item['name']==args.case)
     fixture_root=(args.fixtures/case_definition['template']).resolve()
     case_work=(args.work/args.case).resolve()
@@ -104,16 +107,16 @@ def main():
     input_options.update(case_definition['overrides'])
     input_options.update({'output_dir':'libbse.d','out_bse_eigenvectors':'true','out_screening_matrices':'true'})
     before_manifest=input_manifest(input_options)
-    if args.resume and json.loads((case_work/'input_manifest.json').read_text())!=before_manifest:
+    if args.resume and ast.literal_eval((case_work/'input_manifest.txt').read_text())!=before_manifest:
         raise ValueError('Input files changed since the interrupted run')
-    (case_work/'input_manifest.json').write_text(json.dumps(before_manifest,indent=2)+'\n')
-    (case_work/'case.json').write_text(json.dumps(case_definition,indent=2)+'\n')
+    (case_work/'input_manifest.txt').write_text(pprint.pformat(before_manifest)+'\n')
+    (case_work/'case.txt').write_text(pprint.pformat(case_definition)+'\n')
     for run_branch,run_executable,run_ranks in [('reference',args.reference_exe,args.reference_ranks),('candidate',args.candidate_exe,args.candidate_ranks)]:
         run_root=case_work/run_branch
         if args.resume:
             if parse_input(run_root/'libbse.in')!=input_options:
                 raise ValueError('Resumed physical input differs')
-            execution_record=json.loads((run_root/'execution.json').read_text())
+            execution_record=ast.literal_eval((run_root/'execution.txt').read_text())
             if execution_record['executable_sha256']!=file_digest(run_executable):
                 raise ValueError('Resumed executable differs')
             if 'Time of Total LibBSE execution' not in (run_root/'libbse.out').read_text():
@@ -143,8 +146,8 @@ def main():
         comparison_metrics['pass'] &= comparison_metrics['W_replay_eigenpairs']['pass']
     comparison_metrics['inputs_unchanged']=before_manifest==input_manifest(input_options)
     comparison_metrics['pass'] &= comparison_metrics['inputs_unchanged']
-    (case_work/'comparison.json').write_text(json.dumps(comparison_metrics,indent=2)+'\n')
-    print(json.dumps({'case':args.case,'pass':comparison_metrics['pass'],'eigenpairs':comparison_metrics['eigenpairs']},indent=2))
+    (case_work/'comparison.txt').write_text(pprint.pformat(comparison_metrics)+'\n')
+    print(pprint.pformat({'case':args.case,'pass':comparison_metrics['pass'],'eigenpairs':comparison_metrics['eigenpairs']}))
     return 0 if comparison_metrics['pass'] else 1
 
 if __name__=='__main__':
