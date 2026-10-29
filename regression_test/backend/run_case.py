@@ -38,7 +38,15 @@ def run_bse(executable,case_root,input_options,ranks):
     command=['mpirun','-np',str(ranks),'--map-by',f'slot:PE={thread_count}','--bind-to','core',str(executable)]
     run_start=time.monotonic()
     with (case_root/'libbse.out').open('w') as stdout,(case_root/'libbse.err').open('w') as stderr:
-        subprocess.run(command,cwd=case_root,stdout=stdout,stderr=stderr,check=True,timeout=3600)
+        try:
+            subprocess.run(command,cwd=case_root,stdout=stdout,stderr=stderr,check=True,timeout=3600)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            stdout.flush()
+            stderr.flush()
+            failure_output=(case_root/'libbse.err').read_text(errors='replace')[-6000:]
+            if not failure_output.strip():
+                failure_output=(case_root/'libbse.out').read_text(errors='replace')[-6000:]
+            raise RuntimeError(f'LibBSE execution failed: {error}\n{failure_output}') from error
     if 'Time of Total LibBSE execution' not in (case_root/'libbse.out').read_text():
         raise RuntimeError('Missing successful LibBSE completion')
     (case_root/'execution.txt').write_text(pprint.pformat({'executable_sha256':file_digest(executable),'ranks':ranks,'elapsed_seconds':time.monotonic()-run_start,'command':command})+'\n')

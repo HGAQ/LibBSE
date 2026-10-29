@@ -9,20 +9,6 @@ permissions:
   contents: read
 
 jobs:
-  comparator:
-    name: Comparator self-tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: python -m pip install -r regression_test/backend/requirements.txt
-      - run: python regression_test/general_testcase/test_compare_outputs.py
-
   build-and-test:
     name: Build and regression tests
     runs-on: ubuntu-24.04
@@ -36,29 +22,30 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: HGAQ/LibRPA_LibBSE
-          ref: 7551e28df26175167eb2415e5dbbaf5bec7d1ce6
-          path: ci-deps/LibRPA
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Fetch pinned LibRPA
+        run: |
+          git init ci-deps/LibRPA
+          git -C ci-deps/LibRPA remote add origin https://github.com/HGAQ/LibRPA_LibBSE.git
+          git -C ci-deps/LibRPA fetch --depth 1 origin 7551e28df26175167eb2415e5dbbaf5bec7d1ce6
+          git -C ci-deps/LibRPA checkout --detach FETCH_HEAD
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++ gfortran cmake make pkg-config libtool \
+          sudo apt-get install -y python3-venv g++ gfortran cmake make pkg-config libtool \
             libopenmpi-dev openmpi-bin libopenblas-dev libscalapack-openmpi-dev
-          python -m pip install -r regression_test/backend/requirements.txt
+          python3 -m venv "$RUNNER_TEMP/libbse-python"
+          "$RUNNER_TEMP/libbse-python/bin/python" -m pip install -r regression_test/backend/requirements.txt
+          echo "$RUNNER_TEMP/libbse-python/bin" >> "$GITHUB_PATH"
       - name: Build ELPA with skew support
         run: bash regression_test/backend/build_ci_elpa.sh
-      - name: Compile LibBSE and run fast tests
+      - name: compile LibBSE
+        id: compile
         run: |
           set -euo pipefail
           mkdir -p build-ci
           cmake -S . -B build-ci \
             -DCMAKE_BUILD_TYPE=Release \
+            -DPython3_EXECUTABLE="$(command -v python3)" \
             -DCMAKE_CXX_COMPILER=mpicxx -DCMAKE_Fortran_COMPILER=mpifort \
             -DBLA_VENDOR=OpenBLAS -DLIBRPA_USE_CMAKE_INC=OFF \
             -DLIBBSE_BUILD_TESTING=ON \
@@ -70,14 +57,21 @@ jobs:
             -DLIBBSE_REGRESSION_FIXTURES= \
             -DLIBBSE_REGRESSION_REFERENCE_EXE= 2>&1 | tee build-ci/configure.log
           cmake --build build-ci --parallel 2 2>&1 | tee build-ci/build.log
+      - name: Test General cases
+        id: general
+        if: ${{ !cancelled() && steps.compile.outcome == 'success' }}
+        run: |
+          set -euo pipefail
           ctest --test-dir build-ci -LE "integration|real_si" --parallel 1 --no-tests=error \
             --output-on-failure --output-junit regression.xml 2>&1 | tee build-ci/ctest.log
-      - name: Real Si 222, 2v2c regression
+      - name: test physical cases
+        id: physical
+        if: ${{ !cancelled() && steps.compile.outcome == 'success' }}
         run: |
           set -euo pipefail
           ctest --test-dir build-ci -L real_si --parallel 1 --no-tests=error \
             --output-on-failure --output-junit real-si.xml 2>&1 | tee build-ci/real-si.log
-      - name: Save test reports
+      - name: postrun
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -93,3 +87,10 @@ jobs:
             build-ci/real_si_runs/*/comparison.txt
             build-ci/real_si_runs/*/candidate/libbse.out
             build-ci/real_si_runs/*/candidate/libbse.err
+      - name: report
+        if: always()
+        env:
+          COMPILE_OUTCOME: ${{ steps.compile.outcome }}
+          GENERAL_OUTCOME: ${{ steps.general.outcome }}
+          PHYSICAL_OUTCOME: ${{ steps.physical.outcome }}
+        run: python3 regression_test/backend/ci_report.py --build build-ci
