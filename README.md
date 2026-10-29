@@ -1,3 +1,5 @@
+![LibBSE Logo](docs/Logo.png)
+
 # LibBSE
 
 ```text
