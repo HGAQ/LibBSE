@@ -13,12 +13,13 @@ curl --fail --location --retry 3 \
 printf '%s  %s\n' "$elpa_sha256" elpa.tar.gz | sha256sum --check
 tar -xzf elpa.tar.gz
 cd elpa-build
+# ELPA probes SIMD intrinsics with CFLAGS; build and test on this same runner.
 "../elpa-$elpa_release/configure" \
     --prefix="$ci_deps_root/elpa-install" \
     --with-mpi=yes --enable-openmp --enable-skew-symmetric-support \
-    --disable-avx512 \
+    --disable-avx512-kernels \
     CC=mpicc CXX=mpicxx FC=mpifort \
-    CFLAGS='-O2' CXXFLAGS='-O2' FCFLAGS='-O2' \
+    CFLAGS='-O2 -march=native' CXXFLAGS='-O2 -march=native' FCFLAGS='-O2' \
     LIBS='-lscalapack-openmpi -lopenblas -lm'
 make -j2
 make install
