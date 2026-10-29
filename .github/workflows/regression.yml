@@ -1,0 +1,53 @@
+name: LibBSE regression
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  comparator:
+    name: Comparator self-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.2.6
+      - run: python regression_test/test_compare_outputs.py
+
+  full-regression:
+    name: Build and full regression
+    # Run trusted repository pushes; fork PRs use the hosted job above.
+    if: github.event_name != 'pull_request'
+    runs-on: [self-hosted, linux, x64, libbse]
+    timeout-minutes: 180
+    env:
+      LIBBSE_CI_ENV: ${{ vars.LIBBSE_CI_ENV }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and run all tests
+        run: bash regression_test/ci.sh
+      - name: Save test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-${{ github.sha }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            build-ci/*.log
+            build-ci/*.xml
+            build-ci/CMakeCache.txt
+            build-ci/Testing/Temporary/LastTest.log
+            build-ci/regression_runs/*/comparison.json
+            build-ci/regression_runs/*/provenance.json

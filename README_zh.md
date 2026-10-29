@@ -362,7 +362,7 @@ triplet 也会写出同样的文件，但根据从 singlet 基态出发的电偶
 每个 MPI rank 独立读写自己的振幅文件。光谱重启计算应使用与生成这些文件的
 ELPA 计算相同的 MPI 进程数。
 
-单元测试清单见 [`tests/README.md`](tests/README.md)。
+单元测试清单见 [`regression_test/UNIT_TESTS.md`](regression_test/UNIT_TESTS.md)。
 
 ### TDA 内存优化
 
