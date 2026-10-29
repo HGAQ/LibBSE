@@ -90,11 +90,11 @@ def main():
     physical_names = ['LibBSE_real_Si222_' + name for name in tomllib.loads(case_path.read_text())]
     compile_outcome = os.environ.get('COMPILE_OUTCOME', 'unknown')
     marker = '🟢' if compile_outcome == 'success' else '🔴'
-    lines = ['# LibBSE test report', '', f'{marker} **compile LibBSE: {compile_outcome}**', '']
+    lines = ['# LibBSE test report', '', f'{marker} **Compile LibBSE: {compile_outcome}**', '']
     complete = compile_outcome == 'success'
     for filename, title, names, stage in [
-        ('regression.xml', 'General cases', ['LibBSE_' + name for name in GENERAL_TESTS], 'GENERAL_OUTCOME'),
-        ('real-si.xml', 'Physical cases', physical_names, 'PHYSICAL_OUTCOME'),
+        ('regression.xml', 'General Cases', ['LibBSE_' + name for name in GENERAL_TESTS], 'GENERAL_OUTCOME'),
+        ('real-si.xml', 'Physical Cases', physical_names, 'PHYSICAL_OUTCOME'),
     ]:
         suite_lines, suite_complete = suite_report(args.build / filename, title, names,
                                                   os.environ.get(stage, 'unknown'))

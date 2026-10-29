@@ -38,7 +38,7 @@ jobs:
           echo "$RUNNER_TEMP/libbse-python/bin" >> "$GITHUB_PATH"
       - name: Build ELPA with skew support
         run: bash regression_test/backend/build_ci_elpa.sh
-      - name: compile LibBSE
+      - name: Compile LibBSE
         id: compile
         run: |
           set -euo pipefail
@@ -57,21 +57,21 @@ jobs:
             -DLIBBSE_REGRESSION_FIXTURES= \
             -DLIBBSE_REGRESSION_REFERENCE_EXE= 2>&1 | tee build-ci/configure.log
           cmake --build build-ci --parallel 2 2>&1 | tee build-ci/build.log
-      - name: Test General cases
+      - name: Test General Cases
         id: general
         if: ${{ !cancelled() && steps.compile.outcome == 'success' }}
         run: |
           set -euo pipefail
           ctest --test-dir build-ci -LE "integration|real_si" --parallel 1 --no-tests=error \
             --output-on-failure --output-junit regression.xml 2>&1 | tee build-ci/ctest.log
-      - name: test physical cases
+      - name: Test Physical Cases
         id: physical
         if: ${{ !cancelled() && steps.compile.outcome == 'success' }}
         run: |
           set -euo pipefail
           ctest --test-dir build-ci -L real_si --parallel 1 --no-tests=error \
             --output-on-failure --output-junit real-si.xml 2>&1 | tee build-ci/real-si.log
-      - name: postrun
+      - name: Postrun
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -87,7 +87,7 @@ jobs:
             build-ci/real_si_runs/*/comparison.txt
             build-ci/real_si_runs/*/candidate/libbse.out
             build-ci/real_si_runs/*/candidate/libbse.err
-      - name: report
+      - name: Report
         if: always()
         env:
           COMPILE_OUTCOME: ${{ steps.compile.outcome }}

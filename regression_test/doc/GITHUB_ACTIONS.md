@@ -21,12 +21,12 @@
 
 ## 阶段和结果报告
 
-主要阶段依次为 `compile LibBSE`、`Test General cases`、`test physical cases`、`postrun`、`report`。准备依赖的步骤保留在编译之前。
+主要阶段依次为 `Compile LibBSE`、`Test General Cases`、`Test Physical Cases`、`Postrun`、`Report`。准备依赖的步骤保留在编译之前。
 
-- `postrun` 仅上传诊断日志和 JUnit，失败时也执行，供定位问题。
-- `report` 始终尝试读取两组 JUnit，在 Actions Summary 显示通过数量、所有测试名称、🟢 PASS／🔴 FAIL 和失败原因，失败输出可展开查看。
+- `Postrun` 仅上传诊断日志和 JUnit，失败时也执行，供定位问题。
+- `Report` 始终尝试读取两组 JUnit，在 Actions Summary 显示通过数量、所有测试名称、🟢 PASS／🔴 FAIL 和失败原因，失败输出可展开查看。
 - 缺失、跳过、损坏的报告不能算通过。general 测试失败后，只要编译成功且任务未取消，physical 测试仍执行。
 - 删除重复比较器 job；比较器仍由 general CTest 执行。
-- 只保留一次 `actions/checkout`；LibRPA 用固定 commit 的只读 Git 拉取，Python 使用 Ubuntu Python 的虚拟环境。由 checkout 生成的 `Post …` 属于 GitHub 自动清理，仍可能显示在自定义 `report` 后面，无法合并到 `postrun`。
+- 只保留一次 `actions/checkout`；LibRPA 用固定 commit 的只读 Git 拉取，Python 使用 Ubuntu Python 的虚拟环境。由 checkout 生成的 `Post …` 属于 GitHub 自动清理，仍可能显示在自定义 `Report` 后面，无法合并到 `Postrun`。
 
 报告脚本为 [ci_report.py](../backend/ci_report.py)。它仅使用 Python 标准库，不需要 JSON 输入。
