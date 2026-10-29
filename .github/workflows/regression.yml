@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install numpy==2.2.6
+      - run: python -m pip install -r regression_test/requirements.txt
       - run: python regression_test/test_compare_outputs.py
 
   build-and-test:
@@ -50,7 +50,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y g++ gfortran cmake make pkg-config libtool \
             libopenmpi-dev openmpi-bin libopenblas-dev libscalapack-openmpi-dev
-          python -m pip install numpy==2.2.6
+          python -m pip install -r regression_test/requirements.txt
       - name: Build ELPA with skew support
         run: bash regression_test/build_ci_elpa.sh
       - name: Compile LibBSE and run fast tests
