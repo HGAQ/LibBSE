@@ -19,7 +19,6 @@ void resolve_input_format(InputParameters &options);
  * LibRPA Coulomb name, and aliases a canonical velocity_matrix created by
  * tools/aims_mommat_to_velocity.py. Velocity is mandatory.
  */
-std::filesystem::path prepare_fhi_aims_reader_view(
-    MPI_Comm comm, const InputParameters &options);
+std::filesystem::path prepare_fhi_aims_reader_view(MPI_Comm comm, const InputParameters &options);
 
 } // namespace libbse

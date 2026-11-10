@@ -1,5 +1,5 @@
 #include "io/bse_files.h"
-#include "io/fhi_aims_adapter.h"
+#include "io/aims_adapter.h"
 
 #include <librpa_file_reader.hpp>
 #include <mpi.h>

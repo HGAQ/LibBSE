@@ -1,6 +1,6 @@
 #include "utils/memory_views.h"
 #include "librpa_api.h"
-#include "io/fhi_aims_adapter.h"
+#include "io/aims_adapter.h"
 #include <../src/core/epsilon.h>
 
 #include <stdexcept>

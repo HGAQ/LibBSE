@@ -1,4 +1,5 @@
 #include "io/chi0_screening.h"
+#include "io/rpa_chi0.h"
 #include "io/aims_screened.h"
 #include <iostream>
 #include <fstream>
@@ -91,6 +92,50 @@ int main(int argc,char **argv){
             const auto &m=result.at(0).at({0,{0,0,0}});
             for(int i=0;i<2;++i)for(int j=0;j<2;++j)if(std::abs(m(i,j)-w(i,j))>1.e-12)
                 throw std::runtime_error("real-space chi0 reader differs from Dyson solution");
+        }
+        // Nontrivial complex Delta must act on chi0 BEFORE screening with the
+        // target Coulomb. Rotating screened W instead fails this Dyson reference.
+        if (rank==0) {
+            std::ofstream rpa_info(dir/"chi0_q.info");
+            rpa_info<<"LIBRPA_CHI0_Q_GRID 1\n0 2 1 1 1\n";
+            std::ofstream rpa_response(dir/"chi0_q_1.dat");
+            rpa_response<<"LIBRPA_CHI0_Q 1\n2 1 1\n1 1 -0.2 0\n1 2 0 -0.1\n2 1 0 0.1\n2 2 -0.5 0\n";
+            std::ofstream rpa_manifest(dir/"rpa_symmetry_chi0.dat");
+            rpa_manifest<<"LIBRPA_SYMMETRY_ALL 1\n2 1\nBARE_CHI0 D_CHI0_DAGGER\n1 1 1 0 0 0 0 0 0 0 rpa_delta.dat\n";
+            std::ofstream rpa_delta(dir/"rpa_delta.dat");
+            rpa_delta<<"LIBRPA_DELTA 1\n2 1 1\n1 1 0 1\n1 2 0 0\n2 1 0 0\n2 2 1 0\n";
+            std::ofstream aims_manifest(dir/"aims_symmetry_chi0.dat");
+            aims_manifest<<"AIMS_SYMMETRY_ALL 1\n2 1\nBARE_CHI0 D_CHI0_DAGGER\n1 1 1 0 0 0 0 0 0 0 aims_delta.dat\n";
+            std::ofstream aims_delta(dir/"aims_delta.dat");
+            aims_delta<<"AIMS_DELTA 1\n2 1 1\n1 1 0 1\n1 2 0 0\n2 1 0 0\n2 2 1 0\n";
+            std::ofstream aims_response(dir/"periodic_gw_chi0_q_1_rank_0.dat");
+            aims_response<<"# quantity: chi0\n# n_basbas n_freq q_index: 2 1 1\n# q_fractional: 0 0 0\n# Original RI auxiliary basis; atomic units; indices start at 1.\n"
+                         <<"1 0 1 1 -0.2 0\n1 0 1 2 0 -0.1\n1 0 2 1 0 0.1\n1 0 2 2 -0.5 0\n";
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
+        {
+            Dataset symmetry_dataset(MPI_COMM_WORLD);
+            symmetry_dataset.basis_aux=AtomicBasis(std::vector<std::size_t>{2});
+            symmetry_dataset.pbc.set_latvec({1,0,0,0,1,0,0,0,1});
+            symmetry_dataset.pbc.set_period(1,1,1);
+            if (rank==0) {
+                auto symmetry_coulomb=std::make_shared<ComplexMatrix>(2,2);
+                for(int i=0;i<2;++i)for(int j=0;j<2;++j)(*symmetry_coulomb)(i,j)=v(i,j);
+                symmetry_dataset.vq_cut[0][0][{0,0,0}]=symmetry_coulomb;
+            }
+            InputParameters symmetry_options;
+            symmetry_options.screened_dir=dir.string();
+            symmetry_options.chi0_headwing=false;
+            symmetry_options.chi0_coulomb_metric="single_cut";
+            const auto rpa_symmetry_w=read_librpa_chi0(symmetry_options,symmetry_dataset,{0},{0});
+            symmetry_options.input_format="fhi_aims";
+            symmetry_options.screened_format="fhi_aims_chi0";
+            const auto aims_symmetry_w=read_aims_screened_interaction(symmetry_options,symmetry_dataset,{0},{0});
+            for(int i=0;i<2;++i)for(int j=0;j<2;++j) {
+                if (std::abs(rpa_symmetry_w.at(0).at({0,{0,0,0}})(i,j)-w(i,j))>1.e-12
+                    || std::abs(aims_symmetry_w.at(0).at({0,{0,0,0}})(i,j)-w(i,j))>1.e-12)
+                    throw std::runtime_error("restored chi0 must screen with target Coulomb");
+            }
         }
         MPI_Barrier(MPI_COMM_WORLD);if(rank==0)std::filesystem::remove_all(dir);
         LibRPA_API::finalize();

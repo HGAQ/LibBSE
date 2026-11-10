@@ -1,6 +1,7 @@
 #include "io/full_w_binary.h"
 #include "io/aims_screened.h"
 #include "io/chi0_screening.h"
+#include "io/rpa_chi0.h"
 #include "bse_calculation.h"
 
 #include "distributed_amplitudes.h"

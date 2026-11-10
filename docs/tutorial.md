@@ -1222,3 +1222,7 @@ python3 compare_reference.py
 只调整展宽或光谱能量网格时，可在保留原结果的副本中将 `bse_solver` 改为 `spectrum`，使用相同 MPI 进程数读取已有能量和各 rank 振幅，再生成光谱。对于 05/06，还要将 `bse_plasma_energy_ev` 设为 0 以通过光谱重启的参数检查；这一步读取的是已有有效动态本征态，不会重新求静态核。`bse_continue` 不是通用重启开关。改变结构、基组、k 网格或 BSE 能带窗口时，应重新生成与之匹配的数据。
 
 完成这些例子后，可从对应路径的输入副本开始做参数收敛。对 FHI-aims 保留 `wavefunction_gauge native`；改变 `nvirt` 时确认 KS/QP 导出覆盖完整窗口，尤其要纳入完整的简并能带组。
+
+### 全对称 χ₀ 导入
+
+对于 aims 或 LibRPA 的全空间群约化 χ₀，可通过代表点矩阵、q 映射和 Δ 在 LibBSE 中恢复，再构造完整 W。输入开关、文件协议、Coulomb 覆盖要求和 Γ 点处理见 [全对称 χ₀ 接口](chi0_symmetry.md)。LibRPA 旧的 χ₀(R) 输入方式仍然保留。

@@ -64,10 +64,12 @@ add_library(libbse_core
   src/bse/spectrum.cpp
   src/interface/librpa_api.cpp
   src/io/aims_screened.cpp
+  src/io/aims_symmetry_all.cpp src/io/symmetry_matrix.cpp
   src/io/full_w_binary.cpp
   src/io/chi0_screening.cpp
+  src/io/rpa_chi0.cpp
   src/io/bse_files.cpp
-  src/io/fhi_aims_adapter.cpp
+  src/io/aims_adapter.cpp
   src/parameter/parameter.cpp
   src/utils/profiler.cpp
   src/utils/memory.cpp
@@ -141,6 +143,11 @@ if(LIBBSE_BUILD_TESTING)
     PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
 
   add_executable(test_aims_screened regression_test/general_testcase/test_aims_screened.cpp)
+  add_executable(test_aims_symmetry_all
+    regression_test/general_testcase/test_aims_symmetry_all.cpp src/io/aims_symmetry_all.cpp src/io/symmetry_matrix.cpp)
+  target_include_directories(test_aims_symmetry_all PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_features(test_aims_symmetry_all PRIVATE cxx_std_17)
+  add_test(NAME LibBSE_aims_symmetry_all COMMAND test_aims_symmetry_all)
   add_executable(test_uniform_qmesh regression_test/general_testcase/test_uniform_qmesh.cpp)
   target_include_directories(test_uniform_qmesh PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME LibBSE_uniform_qmesh COMMAND test_uniform_qmesh)
@@ -242,6 +249,24 @@ if(LIBBSE_BUILD_TESTING AND LIBBSE_TEST_REAL_SI)
         --work ${CMAKE_CURRENT_BINARY_DIR}/real_si_runs --case ${si_case})
     set_tests_properties(LibBSE_real_Si222_${si_case} PROPERTIES
       LABELS "real_si" PROCESSORS 2 TIMEOUT 1200
+      ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1")
+  endforeach()
+endif()
+
+# Real all-symmetry W export is too large to bundle. Register only when supplied;
+# once registered, missing/incompatible files fail instead of skipping the test.
+set(LIBBSE_W_ALL_SYMMETRY_FIXTURES "" CACHE PATH "Si 333 W all/none producer fixture root")
+if(LIBBSE_BUILD_TESTING AND LIBBSE_W_ALL_SYMMETRY_FIXTURES)
+  foreach(symmetry_ranks IN ITEMS 1 2)
+    add_test(NAME LibBSE_regression_w_all_symmetry_mpi${symmetry_ranks}
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_w_all_symmetry.py
+        --fixtures ${LIBBSE_W_ALL_SYMMETRY_FIXTURES}
+        --executable $<TARGET_FILE:LibBSE>
+        --work ${CMAKE_CURRENT_BINARY_DIR}/w_all_symmetry_runs
+        --ranks ${symmetry_ranks})
+    set_tests_properties(LibBSE_regression_w_all_symmetry_mpi${symmetry_ranks} PROPERTIES
+      LABELS "regression;integration;w_all_symmetry" PROCESSORS ${symmetry_ranks} TIMEOUT 7200
       ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1")
   endforeach()
 endif()

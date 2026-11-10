@@ -27,6 +27,7 @@ ctest --test-dir build -L real_si --output-on-failure
 
 ## 文档
 
+- [W 全对称恢复：真实 Si 333 串行／MPI 回归](doc/W_ALL_SYMMETRY.md)
 - [快速测试清单](doc/UNIT_TESTS.md)
 - [真实 Si 测试与数据来源](physical_testcases/si222/README.md)
 - [GitHub Actions](doc/GITHUB_ACTIONS.md)

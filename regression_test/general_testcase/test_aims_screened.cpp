@@ -47,6 +47,20 @@ void write_binary_w_fixture(const fs::path &w_root) {
         if (!w_output) throw std::runtime_error("cannot write binary W fixture");
     }
 }
+// Explicit spatial transformations must reproduce the same W(R) as q/-q.
+void write_symmetry_fixture(const fs::path &symmetry_root) {
+    std::ofstream symmetry_map(symmetry_root/"aims_symmetry_all.dat");
+    symmetry_map << "AIMS_SYMMETRY_ALL 1\n2 3\nFULL_W D_W_DAGGER\n" << std::setprecision(17);
+    for (int target_id=1; target_id<=3; ++target_id) {
+        const int representative_id = target_id==3 ? 2 : target_id;
+        const std::string delta_filename="delta_"+std::to_string(target_id)+".dat";
+        symmetry_map << target_id << ' ' << representative_id << " 1 0 " << (target_id-1)/3.
+                     << " 0 0 " << (representative_id-1)/3. << " 0 0 " << delta_filename << '\n';
+        std::ofstream delta_output(symmetry_root/delta_filename);
+        delta_output << "AIMS_DELTA 1\n2 " << target_id << ' ' << representative_id << "\n1 1 "
+                     << (target_id==3 ? -1 : 1) << " 0\n1 2 0 0\n2 1 0 0\n2 2 1 0\n";
+    }
+}
 int main(int argc,char **argv) {
     MPI_Init(&argc,&argv);
     int rank,size; MPI_Comm_rank(MPI_COMM_WORLD,&rank); MPI_Comm_size(MPI_COMM_WORLD,&size);
@@ -83,6 +97,18 @@ int main(int argc,char **argv) {
                     if (std::abs(w_binary_r.at(w_iatom).at(w_pair_key)(0,0)-wr.at(w_iatom).at(w_pair_key)(0,0))>1.e-12)
                         throw std::runtime_error("binary and text full W Fourier transforms differ");
                 }
+            MPI_Barrier(MPI_COMM_WORLD);
+            if (rank==0) write_symmetry_fixture(root);
+            MPI_Barrier(MPI_COMM_WORLD);
+            const auto symmetry_wr=libbse::read_aims_screened_interaction(options,dataset,rows,{0,1});
+            for (int symmetry_iatom:rows) for (int symmetry_jatom=0; symmetry_jatom<2; ++symmetry_jatom)
+                for (const auto &symmetry_cell:dataset.pbc.Rlist) {
+                    const auto symmetry_pair_key=std::make_pair(symmetry_jatom,std::array<int,3>{symmetry_cell.x,symmetry_cell.y,symmetry_cell.z});
+                    if (std::abs(symmetry_wr.at(symmetry_iatom).at(symmetry_pair_key)(0,0)-wr.at(symmetry_iatom).at(symmetry_pair_key)(0,0))>1.e-12)
+                        throw std::runtime_error("Delta restoration changed the full W Fourier transform");
+                }
+            MPI_Barrier(MPI_COMM_WORLD);
+            if (rank==0) fs::remove(root/"aims_symmetry_all.dat");
             MPI_Barrier(MPI_COMM_WORLD);
             if (rank==0) fs::remove(root/"full_w_q_2.bin");
             MPI_Barrier(MPI_COMM_WORLD);

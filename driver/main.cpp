@@ -1,6 +1,6 @@
 #include "bse/bse_calculation.h"
 #include "interface/librpa_api.h"
-#include "io/fhi_aims_adapter.h"
+#include "io/aims_adapter.h"
 #include "parameter/parameter.h"
 #include "utils/profiler.h"
 #include "utils/memory_views.h"

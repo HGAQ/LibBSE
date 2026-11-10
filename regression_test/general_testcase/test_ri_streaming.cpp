@@ -4,7 +4,7 @@
 #include "io/aims_screened.h"
 #include "io/chi0_screening.h"
 #include "io/bse_files.h"
-#include "io/fhi_aims_adapter.h"
+#include "io/aims_adapter.h"
 #include "interface/librpa_api.h"
 #include <mpi.h>
 #include <iostream>
