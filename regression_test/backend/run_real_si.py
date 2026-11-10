@@ -10,6 +10,7 @@ import time
 import numpy as np
 from compare_outputs import compare_directories, compare_eigenpairs, read_eigenpairs
 from run_case import run_bse, screening_to_cache
+from si222_symmetry import restore_and_check_symmetry, dielectric_spectrum
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / 'physical_testcases/si222'
 
@@ -29,16 +30,16 @@ def extract_verified(archive_name, destination):
         archive.extractall(destination, filter='data')
 
 
-def restore_screening(fixture):
-    for compact_path in (fixture / 'screening').glob('*.npz'):
-        with np.load(compact_path, allow_pickle=False) as compact:
-            entries = compact['entries']
-            header = '\n'.join(str(line) for line in compact['header'])
+def restore_screening(fixture, directory="screening"):
+    for compact_path in (fixture / directory).glob("periodic_gw_*.npz"):
+        with np.load(compact_path, allow_pickle=False) as screening_archive:
+            screening_entries = screening_archive['entries']
+            screening_header = '\n'.join(str(line) for line in screening_archive['header'])
         output_path = compact_path.with_suffix('.dat')
-        np.savetxt(output_path, entries,
+        np.savetxt(output_path, screening_entries,
                    fmt=['%d', '%.17e', '%d', '%d', '%.17e', '%.17e'],
-                   header=header, comments='')
-        if not np.array_equal(entries, np.loadtxt(output_path)):
+                   header=screening_header, comments='')
+        if not np.array_equal(screening_entries, np.loadtxt(output_path)):
             raise ValueError('Screening text/binary roundtrip changed float64 entries')
 
 
@@ -90,7 +91,14 @@ def main():
     extract_verified('inputs.tar.xz', work / 'fixture')
     extract_verified('references.tar.gz', work / 'references')
     restore_screening(work / 'fixture')
+    symmetry_metrics = None
+    if definition.get('w_all_symmetry', False):
+        extract_verified('w_all_symmetry.tar.xz', work / 'fixture')
+        restore_screening(work / 'fixture', 'screening_all')
+        symmetry_metrics = restore_and_check_symmetry(work / 'fixture')
     options = options_for(work / 'fixture', definition)
+    if symmetry_metrics is not None:
+        options['screened_dir'] = str(work / 'fixture/screening_all')
     run_bse(args.executable.resolve(), work / 'candidate', options, definition['ranks'])
     output = work / 'candidate/libbse.d'
     reference = work / 'references' / definition['reference']
@@ -111,6 +119,39 @@ def main():
                            max(np.linalg.norm(reference_spectrum[:, 1:]), 1e-30))
     metrics['spectrum_relative_error'] = spectrum_error
     metrics['pass'] &= spectrum_error <= 2e-5
+    if symmetry_metrics is not None:
+        geometry_path = work / 'fixture/provenance/gw/geometry.in'
+        # The old archive has eigenpairs and a broadened spectrum, but no per-state
+        # momentum strengths. Reuse the full-W input to provide the dielectric reference.
+        full_w_options = dict(options)
+        full_w_options['screened_dir'] = str(work / 'fixture/screening')
+        run_bse(args.executable.resolve(), work / 'full_w', full_w_options, definition['ranks'])
+        full_w_output = work / 'full_w/libbse.d'
+        full_w_metrics = compare_directories(reference, full_w_output)
+        full_w_spectrum = np.loadtxt(full_w_output / 'spectrum_singlet_tda.dat')
+        if full_w_spectrum.shape != reference_spectrum.shape or not np.isfinite(full_w_spectrum).all():
+            raise ValueError('Invalid full-W reference spectrum')
+        if not np.allclose(full_w_spectrum[:, 0], reference_spectrum[:, 0], rtol=0, atol=1e-12):
+            raise ValueError('Full-W reference energy grid differs')
+        full_w_spectrum_error = float(np.linalg.norm(full_w_spectrum[:, 1:] - reference_spectrum[:, 1:])
+                                      / max(np.linalg.norm(reference_spectrum[:, 1:]), 1e-30))
+        full_w_metrics['spectrum_relative_error'] = full_w_spectrum_error
+        full_w_metrics['pass'] &= full_w_spectrum_error <= 2e-5
+        metrics['full_w_reference'] = full_w_metrics
+        metrics['pass'] &= full_w_metrics['pass']
+        photon_ev, reference_dielectric = dielectric_spectrum(full_w_output, geometry_path)
+        _, candidate_dielectric = dielectric_spectrum(output, geometry_path)
+        dielectric_norms = np.linalg.norm(reference_dielectric, axis=0)
+        if np.any(dielectric_norms <= 0):
+            raise ValueError('Zero reference dielectric spectrum')
+        dielectric_errors = np.linalg.norm(candidate_dielectric - reference_dielectric, axis=0) / dielectric_norms
+        symmetry_metrics['dielectric_relative_error_xyz'] = dielectric_errors.tolist()
+        symmetry_metrics['dielectric_relative_tolerance'] = 2e-5
+        metrics['w_all_symmetry'] = symmetry_metrics
+        metrics['pass'] &= bool(np.all(dielectric_errors <= 2e-5))
+        np.savetxt(work / 'dielectric_comparison.dat',
+                   np.column_stack((photon_ev, reference_dielectric, candidate_dielectric)),
+                   header='energy_eV ref_eps2_x ref_eps2_y ref_eps2_z all_eps2_x all_eps2_y all_eps2_z')
     if requires_screening:
         replay = screening_to_cache(output, work / 'replay_W', float(options['bse_plasma_energy_ev']))
         replay_options = dict(options)

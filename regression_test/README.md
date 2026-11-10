@@ -21,13 +21,13 @@ ctest --test-dir build -LE 'integration|real_si' --output-on-failure
 ctest --test-dir build -L real_si --output-on-failure
 ```
 
-第二条执行快速测试，第三条执行仓库自带的真实 Si 222、2v2c 测试。运行需要 MPI、ELPA 和配套编译依赖；Python 至少为 3.11。真实 Si 测试默认注册，可用 `-DLIBBSE_TEST_REAL_SI=OFF` 关闭。
+第二条执行快速测试，第三条执行仓库自带的真实 Si 222、2v2c 测试（含 W all symmetry 单／双进程）。运行需要 MPI、ELPA 和配套编译依赖；Python 至少为 3.11。真实 Si 测试默认注册，可用 `-DLIBBSE_TEST_REAL_SI=OFF` 关闭。
 
 原先十组外部模板回归仍保留，配置见 [templates.toml](physical_testcases/templates.toml)。通过 CMake 的 `LIBBSE_REGRESSION_FIXTURES`、`LIBBSE_REGRESSION_REFERENCE_EXE` 注册，标签为 `integration`。该流程使用外部冻结程序；自带 Si 流程使用归档的参考数值，CI 不会自动重建参考答案。
 
 ## 文档
 
-- [W 全对称恢复：真实 Si 333 串行／MPI 回归](doc/W_ALL_SYMMETRY.md)
+- [W 全对称恢复：自带 Si 222 与可选 Si 333 回归](doc/W_ALL_SYMMETRY.md)
 - [快速测试清单](doc/UNIT_TESTS.md)
 - [真实 Si 测试与数据来源](physical_testcases/si222/README.md)
 - [GitHub Actions](doc/GITHUB_ACTIONS.md)

@@ -1,5 +1,7 @@
 # W 全对称恢复回归测试
 
+默认 CI 使用仓库自带的 [Si 222 all symmetry 测试](../physical_testcases/si222/README.md)：复用原有 KS/QP 与冻结参考，新增约 2.2 MiB 代表点 W 和 Δ，覆盖单／双进程。下面的 Si 333 为可选外部补充测试。
+
 测试使用真实 Si 3×3×3、694 个辅助基函数的 aims 导出数据。`all` 分支只读取 4 个代表点 W，通过 Δ 恢复 27 个 q 点；`none` 分支读取未约化 W。两次 BSE 使用同一程序、KS、QP 和 4v3c 能带窗口，不重新运行 DFT/GW。
 
 [执行脚本](../backend/run_w_all_symmetry.py) 注册两项测试：

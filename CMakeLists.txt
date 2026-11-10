@@ -242,7 +242,8 @@ endif()
 option(LIBBSE_TEST_REAL_SI "Register bundled Si 222 2v2c regression tests" ON)
 if(LIBBSE_BUILD_TESTING AND LIBBSE_TEST_REAL_SI)
   foreach(si_case IN ITEMS native_w chi0_headwing native_w_1v1c dynamic
-      native_w_unbatched native_w_mpi2 chi0_headwing_mpi2 boundary)
+      native_w_unbatched native_w_mpi2 chi0_headwing_mpi2 boundary
+      native_w_all_symmetry native_w_all_symmetry_mpi2)
     add_test(NAME LibBSE_real_Si222_${si_case}
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_real_si.py
         --executable $<TARGET_FILE:LibBSE>

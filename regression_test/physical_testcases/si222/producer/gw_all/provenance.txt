@@ -1,0 +1,10 @@
+Produced 2026-11-10; Slurm job 5065064 COMPLETED, exit 0:0, elapsed 29 s.
+4 MPI ranks, 1 OpenMP thread per rank.
+Frozen aims executable SHA256: 4a517db3078559b226c0c23a8798ac5c3432bd01a36c6f40f0a77af5302fea82
+Same control/geometry as producer/gw except periodic_gw_optimize_kgrid_symmetry all.
+218 auxiliary functions; 3 W representatives -> 8 q points.
+Only lowest imaginary-frequency W is packaged (source index 1 of 16).
+Original full-grid KS, RI, Coulomb, velocity, QP and frozen BSE references are reused.
+Native Delta includes atom permutations, angular rotations and Bloch phases.
+Native producer rank W blocks are concatenated losslessly per representative.
+Full producer log, input hashes, and native output hashes are in the supplemental archive.

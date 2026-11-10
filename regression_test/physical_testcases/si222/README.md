@@ -16,10 +16,12 @@
 
 输入归档约 **18.9 MiB**，参考输出约 **18.4 MiB**，合计约 **37.2 MiB**。原始 light 辅助基有 428 维；更激进的 116 维试算虽压到 5.7 MiB，但产生负激发能，因此未作为本数据集发布。
 
-## 实际运行的八项测试
+## 十项真实材料测试
 
 | 名称 | 输入与检查 |
 |---|---|
+| `native_w_all_symmetry` | 真实 aims all 导出的 3 个代表点 W＋Δ → 8 个 q 点；复用 `native_w` 冻结参考，检查 W、32 个态和三方向 Im ε |
+| `native_w_all_symmetry_mpi2` | 同一全对称恢复，2 MPI 进程 |
 | `native_w` | 原生 AIMS W＋QPE → 完整 BSE 构造、32 个激发能／振幅、光谱 |
 | `chi0_headwing` | 原生 χ₀＋head/wing → W → BSE；比较 W、激发能、振幅、光谱 |
 | `dynamic` | χ₀ 路径，plasma energy=15 eV、运行中计算 binding energy |
@@ -40,7 +42,7 @@
 - W 按 q／频率匹配，相对 Frobenius 误差 ≤2×10⁻⁸。
 - 光谱能量网格相同，谱值整体相对误差 ≤2×10⁻⁵。
 
-参考源码和工具链记录见 [reference_version.toml](reference_version.toml)。参考由固定源码版本生成，代表初始回归基线，不是独立高精度物理解。CI 不允许自动更新参考文件。此节目前不覆盖真实 full-BSE、triplet、ABACUS 和 coarse→fine 插值；这些不能由八项测试的通过推断。
+参考源码和工具链记录见 [reference_version.toml](reference_version.toml)。参考由固定源码版本生成，代表初始回归基线，不是独立高精度物理解。CI 不允许自动更新参考文件。此节目前不覆盖真实 full-BSE、triplet、ABACUS 和 coarse→fine 插值；这些不能由上述测试的通过推断。
 
 ## 运行与维护
 
@@ -57,3 +59,21 @@ ctest --test-dir build -L real_si --output-on-failure
 GitHub 的 Physical Cases 使用 CTest verbose 输出，即使通过也列出每个态的 `E_ref`、`E_test`、`Delta`（eV）、`Match (%)`、`sin(theta)` 和简并分组。非简并态的 Match 是归一化复振幅重叠模方；简并组使用两个子空间重叠矩阵的最小奇异值平方，并在组内各行重复显示。组内能量按排序列出，不宣称存在唯一的逐态对应。
 
 接近 100% 时百分数可能因显示精度而相同，`sin(theta)` 保留科学计数法供判断微小偏差。分组及通过阈值保持不变；逐态记录也保存在 `comparison.txt`。χ₀／dynamic 路径还输出 W 重放的态匹配表。
+
+## 仓库自带的 W all symmetry
+
+`native_w_all_symmetry` 和 `native_w_all_symmetry_mpi2` 与其他 Si 222 算例共用电子结构输入和 `native_w` 冻结参考，默认注册在 `real_si` 标签下，GitHub 的 Physical Cases 会自动执行。**无需外部 fixture 路径，也无需 CI 运行 aims。**
+
+补充归档 `w_all_symmetry.tar.xz` 约 2.2 MiB，只新增真实 aims `all` 导出的 3 个代表点 W、8 个 Δ、q 映射和生产记录。原来的 `inputs.tar.xz` 与 `references.tar.gz` 均未修改。补跑输入见 [all control](producer/gw_all/control.in)、[geometry](producer/gw_all/geometry.in) 和 [来源记录](producer/gw_all/provenance.txt)。只有 GW 对称选项从 `inverse` 改为 `all`，辅助基、几何和频率参数保持一致；继续使用原来的 QP，隔离 W 接口变化。
+
+运行时将 NPZ 中的 float64 W 和 complex128 Δ 无损恢复为原生文本。先用 NumPy 独立计算 `W(q) = Δ W(q_rep) Δ†`，逐 q 比较已有完整网格 W，相对 Frobenius 容差 `2e-8`；随后运行 C++ 读取、恢复及 BSE，比较原有全部 32 个激子能量／振幅和光谱。旧参考归档没有逐态动量强度，因此测试还使用原有完整 W 运行一次 BSE，并将其能量／振幅和原光谱校验到冻结参考；随后在完整 W 与 all 两条路径之间分别比较 x/y/z 的 Im ε，相对 L2 容差 `2e-5`，避免方向平均掩盖错误。介电谱使用 singlet 速度规范的每原胞归一化、8 个 k 点、0–12 eV、步长 0.0025 eV、Lorentz 半宽 0.10 eV。
+
+```bash
+ctest --test-dir build -R 'LibBSE_real_Si222_native_w_all_symmetry' --output-on-failure
+```
+
+结果保存在对应 `real_si_runs` 目录的 `comparison.txt` 与 `dielectric_comparison.dat`。归档的 SHA256 与其他输入一同记录在 `archives.txt`。
+
+[打包脚本](../../backend/pack_si222_symmetry.py) 仅供显式维护使用，拒绝覆盖既有归档；CI 不调用它。将一次完成的原生 aims 导出目录传给 `--source`，将新的归档路径传给 `--output`，审核后再更新校验值；不能为使测试通过而重建冻结 BSE 参考。
+
+2026-11-10 本地验证：全部 10 项 `real_si` 测试通过。新增单／双进程测试的逐 q W 最大相对误差均为 `9.49e-9`，三方向介电谱最大相对误差约 `1.33e-9`；32 个激子态的能量、振幅及简并子空间检查通过。

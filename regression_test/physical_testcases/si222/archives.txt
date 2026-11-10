@@ -1,2 +1,3 @@
 {'inputs.tar.xz': '233e64f0919543dca675e19a8088e36b6b9ea2d3693c075eb783eab5b059954e',
- 'references.tar.gz': '4f041c22df921a6fe79a7e7750adf71a46422194faace248fccc6682374aaeaa'}
+ 'references.tar.gz': '4f041c22df921a6fe79a7e7750adf71a46422194faace248fccc6682374aaeaa',
+ 'w_all_symmetry.tar.xz': 'ff69cea312707a3444e7138a4d12e11e5ea69a1050aa19e613ce0b645cfeb0c2'}

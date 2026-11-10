@@ -53,3 +53,17 @@ ranks = 1
 [boundary.options]
 screened_format = "fhi_aims_w"
 bse_w_boundary_average = "true"
+
+[native_w_all_symmetry]
+reference = "native_w"
+ranks = 1
+w_all_symmetry = true
+[native_w_all_symmetry.options]
+screened_format = "fhi_aims_w"
+
+[native_w_all_symmetry_mpi2]
+reference = "native_w"
+ranks = 2
+w_all_symmetry = true
+[native_w_all_symmetry_mpi2.options]
+screened_format = "fhi_aims_w"
