@@ -30,6 +30,8 @@ class Chi0Screening
     librpa_int::Dataset &dataset_;
     double omega_ = -1;
     int diagnostic_index_ = 0;
+    // Number of q points screened so far; labels the per-q progress line.
+    int screening_q_count_ = 0;
 
     struct Channel
     {

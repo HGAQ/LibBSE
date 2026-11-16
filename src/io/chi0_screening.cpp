@@ -9,7 +9,16 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <utility>
+
+extern "C"
+{
+// ScaLAPACK inverse from a Cholesky factor. LibRPA already declares pzpotrf_
+// with this non-const Fortran-style signature, but not pzpotri_.
+void pzpotri_(char *uplo, int *n, std::complex<double> *a, int *ia, int *ja, int *desca,
+              int *info);
+}
 
 namespace libbse
 {
@@ -156,6 +165,118 @@ Matz spectral_power(Matz screening_operator, double power, bool clip)
     // Reuse LibRPA's Hermitian matrix function, including its positive-Coulomb
     // projection. This is a matrix power, never an entry-wise power.
     return librpa_int::power_hemat(screening_operator, power, false, false, clip ? 0. : -1.e5);
+}
+
+// Check Hermiticity of a BLACS-distributed operator and replace it by
+// (A + A^H) / 2. screening_adjoint_local is caller-owned scratch storage with
+// the same descriptor; its previous content is overwritten.
+void average_screening_hermitian_local(Matz &screening_local, Matz &screening_adjoint_local,
+                                       librpa_int::ArrayDesc &screening_descriptor, int n,
+                                       MPI_Comm communicator)
+{
+    // adjoint = A^H
+    librpa_int::ScalapackConnector::ptranc_f(n, n, 1., screening_local.ptr(), 1, 1,
+                                             screening_descriptor.desc, 0.,
+                                             screening_adjoint_local.ptr(), 1, 1,
+                                             screening_descriptor.desc);
+    // error = ||A - A^H||_F^2 and norm = ||A||_F^2, summed over all ranks.
+    double screening_hermitian_sums[2] = {0., 0.};
+    for (int i = 0; i < screening_descriptor.m_loc(); ++i)
+    {
+        for (int j = 0; j < screening_descriptor.n_loc(); ++j)
+        {
+            screening_hermitian_sums[0] +=
+                std::norm(screening_local(i, j) - screening_adjoint_local(i, j));
+            screening_hermitian_sums[1] += std::norm(screening_local(i, j));
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, screening_hermitian_sums, 2, MPI_DOUBLE, MPI_SUM, communicator);
+    const double error = screening_hermitian_sums[0];
+    const double norm = screening_hermitian_sums[1];
+    if (!std::isfinite(norm) || std::sqrt(error) > 1.e-7 * std::max(1., std::sqrt(norm)))
+    {
+        throw std::runtime_error("chi0/V is not Hermitian in the supplied auxiliary basis");
+    }
+    for (int i = 0; i < screening_descriptor.m_loc(); ++i)
+    {
+        for (int j = 0; j < screening_descriptor.n_loc(); ++j)
+        {
+            screening_local(i, j) = (screening_local(i, j) + screening_adjoint_local(i, j)) * 0.5;
+        }
+    }
+}
+
+// Replace the distributed Hermitian positive-definite epsilon by epsilon^-1.
+// Only the upper triangle of the input is referenced, as in the former
+// eigensolver path. screening_adjoint_local is overwritten scratch storage.
+void invert_screening_dielectric_cholesky(Matz &screening_dielectric_local,
+                                          Matz &screening_adjoint_local,
+                                          librpa_int::ArrayDesc &screening_descriptor, int n)
+{
+    // The Fortran interfaces take non-const pointers; these are inputs only.
+    char uplo = 'U';
+    int first_row = 1;
+    int first_col = 1;
+    int info = 0;
+    // epsilon = U^H * U
+    pzpotrf_(&uplo, &n, screening_dielectric_local.ptr(), &first_row, &first_col,
+             screening_descriptor.desc, &info);
+    if (info > 0)
+    {
+        // A failed leading minor means epsilon is not positive definite.
+        throw std::runtime_error("non-positive dielectric eigenvalue");
+    }
+    if (info < 0)
+    {
+        throw std::runtime_error("dielectric Cholesky factorization received an invalid argument");
+    }
+    // epsilon^-1 = U^-1 * U^-H, returned in the upper triangle.
+    pzpotri_(&uplo, &n, screening_dielectric_local.ptr(), &first_row, &first_col,
+             screening_descriptor.desc, &info);
+    if (info != 0)
+    {
+        throw std::runtime_error("dielectric Cholesky inversion failed");
+    }
+    // Fill the strictly lower triangle from the adjoint of the upper triangle.
+    librpa_int::ScalapackConnector::ptranc_f(n, n, 1., screening_dielectric_local.ptr(), 1, 1,
+                                             screening_descriptor.desc, 0.,
+                                             screening_adjoint_local.ptr(), 1, 1,
+                                             screening_descriptor.desc);
+    for (int i = 0; i < screening_descriptor.m_loc(); ++i)
+    {
+        for (int j = 0; j < screening_descriptor.n_loc(); ++j)
+        {
+            const int screening_global_row = screening_descriptor.indx_l2g_r(i);
+            const int screening_global_col = screening_descriptor.indx_l2g_c(j);
+            if (screening_global_row > screening_global_col)
+            {
+                screening_dielectric_local(i, j) = screening_adjoint_local(i, j);
+            }
+            else if (screening_global_row == screening_global_col)
+            {
+                // The diagonal of a Hermitian inverse is real.
+                screening_dielectric_local(i, j) = screening_dielectric_local(i, j).real();
+            }
+        }
+    }
+}
+
+// MemAvailable of this node in GiB for the progress line; -1 if unreadable.
+double screening_node_available_memory_gib()
+{
+    std::ifstream screening_meminfo("/proc/meminfo");
+    std::string screening_meminfo_key;
+    double screening_meminfo_kib = 0.;
+    std::string screening_meminfo_unit;
+    while (screening_meminfo >> screening_meminfo_key >> screening_meminfo_kib)
+    {
+        if (screening_meminfo_key == "MemAvailable:")
+        {
+            return screening_meminfo_kib / (1024. * 1024.);
+        }
+        std::getline(screening_meminfo, screening_meminfo_unit);
+    }
+    return -1.;
 }
 } // namespace
 
@@ -377,26 +498,33 @@ Matz Chi0Screening::screen(const Matz &screening_chi0, const librpa_int::Vector3
         throw std::runtime_error("inconsistent imported chi0 frequencies");
     }
 
-    // Read both Coulomb metrics: full V builds epsilon, cut V regularizes W.
-    auto screening_cut_coulomb = hermitian(collect_coulomb(ds, q, true));
-    auto screening_cut_coulomb_memory =
-        watch_memory("screening_cut_coulomb", screening_cut_coulomb);
-    auto screening_full_coulomb = options_.chi0_coulomb_metric == "full"
-                                      ? hermitian(collect_coulomb(ds, q, false))
-                                      : screening_cut_coulomb.copy();
-    auto screening_full_coulomb_memory =
-        watch_memory("screening_full_coulomb", screening_full_coulomb);
-
-    // Distribute the dense operators for the parallel matrix operations.
+    const double screening_start_time = MPI_Wtime();
     const int n = screening_chi0.nr();
     ArrayDesc desc(ds.blacs_h);
     desc.init(n, n, std::min(n, 64), std::min(n, 64), 0, 0);
-    auto screening_sqrt_full_local = scatter_screening_operator(screening_full_coulomb, desc);
-    auto screening_sqrt_cut_local = scatter_screening_operator(screening_cut_coulomb, desc);
-    auto screening_sqrt_full_local_memory =
-        watch_memory("screening_sqrt_full_local", screening_sqrt_full_local);
+    const bool screening_full_metric = options_.chi0_coulomb_metric == "full";
+
+    // Read both Coulomb metrics: full V builds epsilon, cut V regularizes W.
+    // Each dense Coulomb matrix is released as soon as its BLACS copy exists.
+    Matz screening_sqrt_cut_local;
+    {
+        auto screening_cut_coulomb = hermitian(collect_coulomb(ds, q, true));
+        auto screening_cut_coulomb_memory =
+            watch_memory("screening_cut_coulomb", screening_cut_coulomb);
+        screening_sqrt_cut_local = scatter_screening_operator(screening_cut_coulomb, desc);
+    }
     auto screening_sqrt_cut_local_memory =
         watch_memory("screening_sqrt_cut_local", screening_sqrt_cut_local);
+    Matz screening_sqrt_full_local;
+    if (screening_full_metric)
+    {
+        auto screening_full_coulomb = hermitian(collect_coulomb(ds, q, false));
+        auto screening_full_coulomb_memory =
+            watch_memory("screening_full_coulomb", screening_full_coulomb);
+        screening_sqrt_full_local = scatter_screening_operator(screening_full_coulomb, desc);
+    }
+    const double screening_coulomb_end_time = MPI_Wtime();
+
     auto screening_eigenvectors_local = init_local_mat<Complex>(desc, MAJOR::COL);
     auto screening_eigenvectors_local_memory =
         watch_memory("screening_eigenvectors_local", screening_eigenvectors_local);
@@ -407,8 +535,9 @@ Matz Chi0Screening::screen(const Matz &screening_chi0, const librpa_int::Vector3
     // Use exactly the LibRPA GW square-root convention (descending Coulomb
     // eigenvectors; real Gamma decomposition). The largest Coulomb eigenvector
     // is the singular head channel expected by rewrite_eps_abf_space.
-    const bool gamma = options_.chi0_coulomb_metric == "full" &&
-                       std::abs(q.x) + std::abs(q.y) + std::abs(q.z) < 1.e-10;
+    const bool gamma =
+        screening_full_metric && std::abs(q.x) + std::abs(q.y) + std::abs(q.z) < 1.e-10;
+    // sqrt(V_cut) = Z_cut * diag(lambda_cut^(1/2)) * Z_cut^H.
     if (gamma)
     {
         power_hemat_blacs_real(screening_sqrt_cut_local, desc, screening_eigenvectors_local, desc,
@@ -419,16 +548,30 @@ Matz Chi0Screening::screen(const Matz &screening_chi0, const librpa_int::Vector3
         power_hemat_blacs_desc(screening_sqrt_cut_local, desc, screening_eigenvectors_local, desc,
                                filtered, screening_eigenvalues.data(), .5, 0.);
     }
-    if (gamma)
+    if (screening_full_metric)
     {
-        power_hemat_blacs_real(screening_sqrt_full_local, desc, screening_eigenvectors_local, desc,
-                               filtered, screening_eigenvalues.data(), .5, 0.);
+        // sqrt(V_full) = Z_full * diag(lambda_full^(1/2)) * Z_full^H.
+        // The eigenvectors of V_full stay available for the Gamma head/wing step.
+        if (gamma)
+        {
+            power_hemat_blacs_real(screening_sqrt_full_local, desc, screening_eigenvectors_local,
+                                   desc, filtered, screening_eigenvalues.data(), .5, 0.);
+        }
+        else
+        {
+            power_hemat_blacs_desc(screening_sqrt_full_local, desc, screening_eigenvectors_local,
+                                   desc, filtered, screening_eigenvalues.data(), .5, 0.);
+        }
     }
     else
     {
-        power_hemat_blacs_desc(screening_sqrt_full_local, desc, screening_eigenvectors_local, desc,
-                               filtered, screening_eigenvalues.data(), .5, 0.);
+        // A single Coulomb metric has V_full == V_cut: reuse the square root
+        // instead of repeating an identical eigendecomposition.
+        screening_sqrt_full_local = screening_sqrt_cut_local.copy();
     }
+    auto screening_sqrt_full_local_memory =
+        watch_memory("screening_sqrt_full_local", screening_sqrt_full_local);
+    const double screening_sqrt_end_time = MPI_Wtime();
 
     // Form epsilon = I - sqrt(V_full) * chi0 * sqrt(V_full).
     auto screening_response_local = scatter_screening_operator(hermitian(screening_chi0), desc);
@@ -436,9 +579,11 @@ Matz Chi0Screening::screen(const Matz &screening_chi0, const librpa_int::Vector3
         watch_memory("screening_response_local", screening_response_local);
     auto screening_workspace = init_local_mat<Complex>(desc, MAJOR::COL);
     auto screening_workspace_memory = watch_memory("screening_workspace", screening_workspace);
+    // workspace = sqrt(V_full) * chi0
     ScalapackConnector::pgemm_f('N', 'N', n, n, n, 1., screening_sqrt_full_local.ptr(), 1, 1,
                                 desc.desc, screening_response_local.ptr(), 1, 1, desc.desc, 0.,
                                 screening_workspace.ptr(), 1, 1, desc.desc);
+    // response = -workspace * sqrt(V_full), then add the identity below.
     ScalapackConnector::pgemm_f('N', 'N', n, n, n, -1., screening_workspace.ptr(), 1, 1, desc.desc,
                                 screening_sqrt_full_local.ptr(), 1, 1, desc.desc, 0.,
                                 screening_response_local.ptr(), 1, 1, desc.desc);
@@ -452,68 +597,120 @@ Matz Chi0Screening::screen(const Matz &screening_chi0, const librpa_int::Vector3
             }
         }
     }
+    const double screening_epsilon_end_time = MPI_Wtime();
     if (gamma && ds.comm_h.myid == 0)
     {
         std::cout << "Gamma Coulomb retained subspace: " << n - filtered << " / " << n << '\n';
     }
-    if (gamma && options_.chi0_headwing)
+    const bool screening_uses_headwing = gamma && options_.chi0_headwing;
+    if (screening_uses_headwing)
     {
         // LibRPA option 3 performs the body inverse, analytic wing coupling and
         // angular Gamma-cell average, and returns epsilon^-1 (not epsilon).
         ds.p_headwing->rewrite_eps_abf_space(screening_response_local, 0, screening_sqrt_full_local,
                                              screening_eigenvectors_local, desc, n - filtered, 0.,
                                              false, false);
+        // Check and remove the roundoff anti-Hermitian part of epsilon^-1.
+        average_screening_hermitian_local(screening_response_local, screening_workspace, desc, n,
+                                          ds.comm_h.comm);
     }
     else
     {
-        power_hemat_blacs_desc(screening_response_local, desc, screening_eigenvectors_local, desc,
-                               filtered, screening_eigenvalues.data(), -1., 0.);
-        if (filtered ||
-            *std::min_element(screening_eigenvalues.begin(), screening_eigenvalues.end()) <= 0.)
-        {
-            throw std::runtime_error("non-positive dielectric eigenvalue");
-        }
+        // epsilon is Hermitian positive definite, so epsilon^-1 needs only a
+        // Cholesky factorization instead of a full eigendecomposition.
+        invert_screening_dielectric_cholesky(screening_response_local, screening_workspace, desc,
+                                             n);
     }
-    auto screening_inverse =
-        hermitian(gather_screening_operator(screening_response_local, desc, n, ds.comm_h.comm));
-    auto screening_inverse_memory = watch_memory("screening_inverse", screening_inverse);
-    auto screening_sqrt_cut =
-        hermitian(gather_screening_operator(screening_sqrt_cut_local, desc, n, ds.comm_h.comm));
-    auto screening_sqrt_cut_memory = watch_memory("screening_sqrt_cut", screening_sqrt_cut);
+    // sqrt(V_full) and the Coulomb eigenvectors are not needed after epsilon^-1.
+    screening_sqrt_full_local.clear();
+    screening_eigenvectors_local.clear();
+    const double screening_inverse_end_time = MPI_Wtime();
+
     // epsilon=I-sqrt(V_full)*chi0*sqrt(V_full), W=sqrt(V_cut)*epsilon^-1*sqrt(V_cut).
     // The cut only regularizes the external interaction; using it inside epsilon
     // changes all q channels and is not the producer's GW screening convention.
-    const auto screening_w = screening_sqrt_cut * screening_inverse * screening_sqrt_cut;
-    auto screening_w_memory = watch_memory("screening_w", screening_w);
+    average_screening_hermitian_local(screening_sqrt_cut_local, screening_workspace, desc, n,
+                                      ds.comm_h.comm);
+    auto screening_w_local = init_local_mat<Complex>(desc, MAJOR::COL);
+    auto screening_w_local_memory = watch_memory("screening_w_local", screening_w_local);
+    // workspace = sqrt(V_cut) * epsilon^-1
+    ScalapackConnector::pgemm_f('N', 'N', n, n, n, 1., screening_sqrt_cut_local.ptr(), 1, 1,
+                                desc.desc, screening_response_local.ptr(), 1, 1, desc.desc, 0.,
+                                screening_workspace.ptr(), 1, 1, desc.desc);
+    // W = workspace * sqrt(V_cut)
+    ScalapackConnector::pgemm_f('N', 'N', n, n, n, 1., screening_workspace.ptr(), 1, 1, desc.desc,
+                                screening_sqrt_cut_local.ptr(), 1, 1, desc.desc, 0.,
+                                screening_w_local.ptr(), 1, 1, desc.desc);
+    screening_workspace.clear();
+    const double screening_w_end_time = MPI_Wtime();
 
-    // Optionally save coarse-grid operators for comparison with the producer.
-    if (options_.out_screening_matrices && ds.comm_h.myid == 0)
+    // Every rank extracts its own atom pairs from W, so W is the only operator
+    // that is always replicated. sqrt(V_cut) and epsilon^-1 are replicated only
+    // for the audit files or the later binding-energy correction.
+    auto screening_w = gather_screening_operator(screening_w_local, desc, n, ds.comm_h.comm);
+    auto screening_w_memory = watch_memory("screening_w", screening_w);
+    screening_w_local.clear();
+    const bool screening_keeps_channels = options_.bse_plasma_energy_ev > 0;
+    if (options_.out_screening_matrices || screening_keeps_channels)
     {
-        // Self-describing binary audit record (native int32/float64/complex128,
-        // row-major): n, q_fractional[3], omega_Ha, sqrt(V_cut), epsilon^-1.
-        // These are the coarse-grid matrices BEFORE spatial interpolation.
-        const auto frac = q * ds.pbc.latvec.Transpose();
-        const double screening_audit_header[4] = {frac.x, frac.y, frac.z, omega};
-        const auto path = std::filesystem::path(options_.output_dir) /
-                          ("screening_q_" + std::to_string(diagnostic_index_++) + ".bin");
-        std::ofstream out(path, std::ios::binary);
-        out.write(reinterpret_cast<const char *>(&n), sizeof(n));
-        out.write(reinterpret_cast<const char *>(screening_audit_header),
-                  sizeof(screening_audit_header));
-        out.write(reinterpret_cast<const char *>(screening_sqrt_cut.ptr()),
-                  screening_sqrt_cut.size() * sizeof(Complex));
-        out.write(reinterpret_cast<const char *>(screening_inverse.ptr()),
-                  screening_inverse.size() * sizeof(Complex));
-        if (!out)
+        auto screening_sqrt_cut =
+            gather_screening_operator(screening_sqrt_cut_local, desc, n, ds.comm_h.comm);
+        auto screening_sqrt_cut_memory = watch_memory("screening_sqrt_cut", screening_sqrt_cut);
+        auto screening_inverse =
+            gather_screening_operator(screening_response_local, desc, n, ds.comm_h.comm);
+        auto screening_inverse_memory = watch_memory("screening_inverse", screening_inverse);
+
+        // Optionally save coarse-grid operators for comparison with the producer.
+        if (options_.out_screening_matrices && ds.comm_h.myid == 0)
         {
-            throw std::runtime_error("cannot write screening audit matrices: " + path.string());
+            // Self-describing binary audit record (native int32/float64/complex128,
+            // row-major): n, q_fractional[3], omega_Ha, sqrt(V_cut), epsilon^-1.
+            // These are the coarse-grid matrices BEFORE spatial interpolation.
+            const auto frac = q * ds.pbc.latvec.Transpose();
+            const double screening_audit_header[4] = {frac.x, frac.y, frac.z, omega};
+            const auto path = std::filesystem::path(options_.output_dir) /
+                              ("screening_q_" + std::to_string(diagnostic_index_++) + ".bin");
+            std::ofstream out(path, std::ios::binary);
+            out.write(reinterpret_cast<const char *>(&n), sizeof(n));
+            out.write(reinterpret_cast<const char *>(screening_audit_header),
+                      sizeof(screening_audit_header));
+            out.write(reinterpret_cast<const char *>(screening_sqrt_cut.ptr()),
+                      screening_sqrt_cut.size() * sizeof(Complex));
+            out.write(reinterpret_cast<const char *>(screening_inverse.ptr()),
+                      screening_inverse.size() * sizeof(Complex));
+            if (!out)
+            {
+                throw std::runtime_error("cannot write screening audit matrices: " + path.string());
+            }
+        }
+
+        // Keep the static channels for the later binding-energy correction.
+        if (screening_keeps_channels)
+        {
+            channels_[q] = {std::move(screening_sqrt_cut), std::move(screening_inverse)};
         }
     }
+    const double screening_end_time = MPI_Wtime();
 
-    // Keep the static channels for the later binding-energy correction.
-    if (options_.bse_plasma_energy_ev > 0)
+    // One progress line per q point, so long screening stages are never silent.
+    ++screening_q_count_;
+    if (ds.comm_h.myid == 0)
     {
-        channels_[q] = {std::move(screening_sqrt_cut), std::move(screening_inverse)};
+        const auto screening_q_fractional = q * ds.pbc.latvec.Transpose();
+        std::cout << "chi0 screening q #" << screening_q_count_ << " = ("
+                  << screening_q_fractional.x << ", " << screening_q_fractional.y << ", "
+                  << screening_q_fractional.z << "), n_aux = " << n
+                  << ", retained Coulomb subspace = " << n - filtered << ", inverse = "
+                  << (screening_uses_headwing ? "Gamma head/wing" : "Cholesky") << '\n'
+                  << "  seconds: Coulomb " << screening_coulomb_end_time - screening_start_time
+                  << ", sqrt(V) " << screening_sqrt_end_time - screening_coulomb_end_time
+                  << ", epsilon " << screening_epsilon_end_time - screening_sqrt_end_time
+                  << ", epsilon^-1 " << screening_inverse_end_time - screening_epsilon_end_time
+                  << ", W " << screening_w_end_time - screening_inverse_end_time << ", gather "
+                  << screening_end_time - screening_w_end_time << ", total "
+                  << screening_end_time - screening_start_time
+                  << "; node available memory " << screening_node_available_memory_gib()
+                  << " GiB" << std::endl;
     }
     return screening_w;
 }
