@@ -360,9 +360,9 @@ void run_bse(const InputParameters &options,
     }
 
     //full and tda calculation
-    // 1. Transform the cut Coulomb interaction from q to R space using LibRPA.
+    // 1. Transform the cut Coulomb interaction from q to R space (FT_Vq convention).
     if (rank == 0)
-        std::cout << "Transforming cut Coulomb from q to R with LibRPA FT_Vq...\n";
+        std::cout << "Transforming cut Coulomb from q to R...\n";
     TensorMap<Complex> bare;
     auto bare_memory = watch_memory("bare", bare);
     {

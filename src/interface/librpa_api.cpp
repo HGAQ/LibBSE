@@ -2,8 +2,12 @@
 #include "librpa_api.h"
 #include "io/aims_adapter.h"
 #include <../src/core/epsilon.h>
+#include <../src/utils/constants.h>
 
+#include <cmath>
+#include <complex>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace LibRPA_API
@@ -54,10 +58,133 @@ std::shared_ptr<librpa_int::Dataset> read_dataset(
 libbse::TensorMap<libbse::Complex> build_bare_coulomb(
     librpa_int::Dataset &dataset)
 {
-    auto real_space = librpa_int::FT_Vq(dataset.comm_h, dataset.basis_aux,
-                                        dataset.symmetry_context, dataset.vq_cut,
-                                        dataset.pbc, true, false);
-    auto real_space_memory = libbse::watch_memory("Coulomb.FT_input", real_space);
+    // V(R) = Re[(1/N_q) * sum_q exp(-2*pi*i*q.R) * V(q)] on the coarse BvK cell.
+    // This is LibRPA's FT_Vq convention (inverse-symmetry stars only), evaluated
+    // here with OpenMP over R and without complex temporaries: FT_Vq is serial
+    // and allocates a scaled copy of V(q) for every (R, q) term.
+    const auto &coulomb_q_blocks = dataset.vq_cut;
+    const auto &coulomb_pbc = dataset.pbc;
+    const auto &coulomb_r_list = coulomb_pbc.Rlist;
+    const int coulomb_r_count = static_cast<int>(coulomb_r_list.size());
+    const double coulomb_cell_count = double(coulomb_pbc.get_n_cells_bvk());
+
+    libbse::TensorMap<libbse::Complex> coulomb_real_space_output;
+    auto coulomb_real_space_output_memory =
+        libbse::watch_memory("Coulomb.real_space_output", coulomb_real_space_output);
+    for (const auto &[iat, coulomb_j_blocks] : coulomb_q_blocks)
+    {
+        for (const auto &[jat, coulomb_q_matrices] : coulomb_j_blocks)
+        {
+            const std::size_t n_mu = dataset.basis_aux[iat];
+            const std::size_t n_nu = dataset.basis_aux[jat];
+            // When only one ordering of an atom pair is stored, the reverse
+            // block follows from V_ji(q) = V_ij(q)^H.
+            const bool coulomb_needs_reverse_pair =
+                iat != jat && (coulomb_q_blocks.count(jat) == 0 ||
+                               coulomb_q_blocks.at(jat).count(iat) == 0);
+
+            // List every Brillouin-zone term once: its V(q) block, the BZ point
+            // of the star, and whether that point is the stored q or its inverse.
+            std::vector<const librpa_int::ComplexMatrix *> coulomb_term_matrices;
+            std::vector<librpa_int::Vector3_Order<double>> coulomb_term_q_points;
+            std::vector<int> coulomb_term_is_stored_q;
+            for (const auto &[q, coulomb_q_matrix] : coulomb_q_matrices)
+            {
+                if (static_cast<std::size_t>(coulomb_q_matrix->nr) != n_mu ||
+                    static_cast<std::size_t>(coulomb_q_matrix->nc) != n_nu)
+                {
+                    throw std::runtime_error(
+                        "cut Coulomb block size differs from the auxiliary basis");
+                }
+                for (const auto &q_bz : coulomb_pbc.map_irk_ks.at(q))
+                {
+                    coulomb_term_matrices.push_back(coulomb_q_matrix.get());
+                    coulomb_term_q_points.push_back(q_bz);
+                    coulomb_term_is_stored_q.push_back(q_bz == q ? 1 : 0);
+                }
+            }
+            const int coulomb_term_count = static_cast<int>(coulomb_term_matrices.size());
+
+            // Tensors are created serially; the parallel loop only fills them.
+            std::vector<RI::Tensor<libbse::Complex>> coulomb_r_tensors(coulomb_r_count);
+            std::vector<RI::Tensor<libbse::Complex>> coulomb_reverse_r_tensors(
+                coulomb_needs_reverse_pair ? coulomb_r_count : 0);
+            for (int ir = 0; ir < coulomb_r_count; ++ir)
+            {
+                coulomb_r_tensors[ir] = RI::Tensor<libbse::Complex>({n_mu, n_nu});
+                if (coulomb_needs_reverse_pair)
+                {
+                    coulomb_reverse_r_tensors[ir] = RI::Tensor<libbse::Complex>({n_nu, n_mu});
+                }
+            }
+
+#pragma omp parallel for schedule(static)
+            for (int ir = 0; ir < coulomb_r_count; ++ir)
+            {
+                const auto &r = coulomb_r_list[ir];
+                // Real parts of sum_q V(q)*phase and of sum_q conj(V(q))*phase.
+                std::vector<double> coulomb_r_real(n_mu * n_nu, 0.);
+                std::vector<double> coulomb_r_conjugate_real(
+                    coulomb_needs_reverse_pair ? n_mu * n_nu : 0, 0.);
+                for (int iterm = 0; iterm < coulomb_term_count; ++iterm)
+                {
+                    // phase = exp(-2*pi*i*q_bz.R) / N_q
+                    const double coulomb_phase_angle =
+                        -coulomb_term_q_points[iterm] * (r * coulomb_pbc.latvec) *
+                        librpa_int::TWO_PI;
+                    const double coulomb_phase_cos =
+                        std::cos(coulomb_phase_angle) / coulomb_cell_count;
+                    const double coulomb_phase_sin =
+                        std::sin(coulomb_phase_angle) / coulomb_cell_count;
+                    // An inverse star member contributes conj(V(q)) to V(-q).
+                    const double coulomb_imag_sign = coulomb_term_is_stored_q[iterm] ? 1. : -1.;
+                    const std::complex<double> *coulomb_q_values = coulomb_term_matrices[iterm]->c;
+                    for (std::size_t k = 0; k < n_mu * n_nu; ++k)
+                    {
+                        const double coulomb_real_term =
+                            coulomb_q_values[k].real() * coulomb_phase_cos;
+                        const double coulomb_imag_term =
+                            coulomb_imag_sign * coulomb_q_values[k].imag() * coulomb_phase_sin;
+                        // Re[(a + i*b) * (cos + i*sin)] = a*cos - b*sin
+                        coulomb_r_real[k] += coulomb_real_term - coulomb_imag_term;
+                        if (coulomb_needs_reverse_pair)
+                        {
+                            // Re[(a - i*b) * (cos + i*sin)] = a*cos + b*sin
+                            coulomb_r_conjugate_real[k] += coulomb_real_term + coulomb_imag_term;
+                        }
+                    }
+                }
+                for (std::size_t i = 0; i < n_mu; ++i)
+                {
+                    for (std::size_t j = 0; j < n_nu; ++j)
+                    {
+                        coulomb_r_tensors[ir](i, j) = coulomb_r_real[i * n_nu + j];
+                        if (coulomb_needs_reverse_pair)
+                        {
+                            // V_ji(R) uses the conjugate transpose of V_ij(q).
+                            coulomb_reverse_r_tensors[ir](j, i) =
+                                coulomb_r_conjugate_real[i * n_nu + j];
+                        }
+                    }
+                }
+            }
+
+            for (int ir = 0; ir < coulomb_r_count; ++ir)
+            {
+                const auto &r = coulomb_r_list[ir];
+                coulomb_real_space_output[static_cast<int>(iat)]
+                                         [{static_cast<int>(jat), {r.x, r.y, r.z}}] =
+                    std::move(coulomb_r_tensors[ir]);
+                if (coulomb_needs_reverse_pair)
+                {
+                    coulomb_real_space_output[static_cast<int>(jat)]
+                                             [{static_cast<int>(iat), {r.x, r.y, r.z}}] =
+                        std::move(coulomb_reverse_r_tensors[ir]);
+                }
+            }
+        }
+    }
+
     // Chi0 screening still needs V(q) after constructing the Hartree kernel.
     // Keep both the checkpoint and clear inside this condition: without braces
     // clear() also runs for chi0 input and destroys Coulomb data needed for W.
@@ -66,27 +193,7 @@ libbse::TensorMap<libbse::Complex> build_bare_coulomb(
         libbse::MemoryTracker::instance().checkpoint();
         dataset.vq_cut.clear();
     }
-
-    libbse::TensorMap<libbse::Complex> result;
-    auto result_memory = libbse::watch_memory("Coulomb.real_space_output", result);
-    for (const auto &[iat, atom_blocks] : real_space)
-    {
-        for (const auto &[jat, r_blocks] : atom_blocks)
-        {
-            for (const auto &[r, matrix_ptr] : r_blocks)
-            {
-                RI::Tensor<libbse::Complex> tensor(
-                    {static_cast<std::size_t>(matrix_ptr->nr),
-                     static_cast<std::size_t>(matrix_ptr->nc)});
-                for (int i = 0; i != matrix_ptr->nr; ++i)
-                    for (int j = 0; j != matrix_ptr->nc; ++j)
-                        tensor(i, j) = (*matrix_ptr)(i, j);
-                result[static_cast<int>(iat)]
-                      [{static_cast<int>(jat), {r.x, r.y, r.z}}] = std::move(tensor);
-            }
-        }
-    }
-    return result;
+    return coulomb_real_space_output;
 }
 
 libbse::TensorMap<libbse::Complex> transform_screened_q_to_r(

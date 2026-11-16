@@ -270,9 +270,13 @@ TensorMap<Complex> read_aims_screened_interaction(const InputParameters &options
     const std::size_t naux = dataset.basis_aux.nb_total;
     double aims_screened_chi0_to_w_total_seconds = 0.0;
     std::size_t aims_screened_chi0_q_count = 0;
+    // Wall time spent parsing the text files of all q points on this rank.
+    double aims_screened_file_read_seconds = 0.0;
+    const double aims_screened_q_loop_start_time = MPI_Wtime();
 
     for (auto &[iq, paths] : files)
     {
+        const double aims_screened_file_read_start_time = MPI_Wtime();
         std::cout << "Reading file blocks for q index " << iq << "/" << files.size() << std::endl;
 
         std::sort(paths.begin(), paths.end());
@@ -376,6 +380,7 @@ TensorMap<Complex> read_aims_screened_interaction(const InputParameters &options
             throw std::runtime_error("missing aims W rank block/entries at q " +
                                      std::to_string(headers.at(iq).iq));
         }
+        aims_screened_file_read_seconds += MPI_Wtime() - aims_screened_file_read_start_time;
         // Rotate the complete auxiliary matrix before selecting local atom pairs:
         // spatial symmetry can move atoms owned by another MPI rank into this block.
         std::vector<const AimsSymmetryQMapping *> q_targets;
@@ -477,7 +482,9 @@ TensorMap<Complex> read_aims_screened_interaction(const InputParameters &options
                   << (use_symmetry_all ? "Delta symmetry: " : "time reversal: ") << restored << '\n'
                   << "  Screening mesh: " << pbc.period.x << 'x' << pbc.period.y << 'x'
                   << pbc.period.z << '\n'
-                  << "  BSE k-points: " << dataset.mf_band.get_n_kpoints() << '\n';
+                  << "  BSE k-points: " << dataset.mf_band.get_n_kpoints() << '\n'
+                  << "  | Time of q loop on rank 0: " << MPI_Wtime() - aims_screened_q_loop_start_time
+                  << " s, of which text parsing: " << aims_screened_file_read_seconds << " s\n";
     }
     // Do not add V: the aims writer exports W = Wc + v_cut, in Hartree.
     // W(R,iw0) = (1/Nq) sum_q exp(-2*pi*i*q.R) W(q,iw0).
@@ -489,6 +496,13 @@ TensorMap<Complex> read_aims_screened_interaction(const InputParameters &options
     // Keep the reconstructed q/-q map in the screening object for subsequent
     // use, then transform the selected-frequency W blocks to real space.
     screening->pbc = pbc;
-    return LibRPA_API::transform_screened_q_to_r(dataset, pbc, aims_screened_q_blocks);
+    const double aims_screened_fourier_start_time = MPI_Wtime();
+    auto aims_screened_real_space = LibRPA_API::transform_screened_q_to_r(dataset, pbc, aims_screened_q_blocks);
+    if (dataset.comm_h.myid == 0)
+    {
+        std::cout << "  | Time of W(q) -> W(R) Fourier transform on rank 0: "
+                  << MPI_Wtime() - aims_screened_fourier_start_time << " s" << std::endl;
+    }
+    return aims_screened_real_space;
 }
 } // namespace libbse
