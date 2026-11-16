@@ -1,0 +1,38 @@
+Job 5151906, COMPLETED, exit 0:0, 2026-11-16, node nep15080303.
+27 fast + 10 real-Si + 10 template A/B tests passed.
+Reference base: fe2d54c, OpenMP OpenBLAS.
+Reference SHA256: 6772da7e894a55c44af16e59e022d2b9f2cc366a01f67211a40834bf60398acf
+Candidate SHA256: 030ec25ba542ab4605f17fce85cc2bbcd664de00036123330c16479cfa8c9026
+Input: Si 7^3, 4 occupied x 4 unoccupied, singlet TDA, native aims W, 5488 states.
+W: 172 representative q, 694 auxiliary functions, one nonzero frequency per file.
+Shared-node/cache variability is visible; two samples per executable are not confidence intervals.
+
+Same allocation, input, BLAS/thread settings; order reference/candidate/candidate/reference.
+MPI ranks 12, OMP threads 4
+Numbers are not compared against an earlier run on another allocation.
+0_reference: launcher 499.906059 s
+| Time of q loop on rank 0: 166.816 s, of which text parsing: 164.955 s
+| Time of W(q) -> W(R) Fourier transform on rank 0: 178.926 s
+Total LibBSE execution: 498.1711 s
+Read and construct screened interaction: 375.2267 s
+1_candidate: launcher 289.607997 s
+| Time of q loop on rank 0: 6.58592 s, of which text parsing: 3.6406 s
+| Batched reader rank 0: local parsing 3.31277 s, matrix broadcasts 1.84191 s (text parsing above includes batch synchronization)
+| Time of W(q) -> W(R) Fourier transform on rank 0: 156.026 s
+Total LibBSE execution: 287.9512 s
+Read and construct screened interaction: 175.3321 s
+2_candidate: launcher 320.562338 s
+| Time of q loop on rank 0: 6.50513 s, of which text parsing: 3.60757 s
+| Batched reader rank 0: local parsing 3.36895 s, matrix broadcasts 1.74076 s (text parsing above includes batch synchronization)
+| Time of W(q) -> W(R) Fourier transform on rank 0: 179.116 s
+Total LibBSE execution: 318.8972 s
+Read and construct screened interaction: 199.2576 s
+3_reference: launcher 356.984507 s
+| Time of q loop on rank 0: 79.2523 s, of which text parsing: 77.5157 s
+| Time of W(q) -> W(R) Fourier transform on rank 0: 156.234 s
+Total LibBSE execution: 355.3011 s
+Read and construct screened interaction: 247.3121 s
+1_candidate: max energy error 0.000000000000e+00 Ry; relative spectrum error 1.439274641051e-13
+2_candidate: max energy error 0.000000000000e+00 Ry; relative spectrum error 1.024913145216e-13
+3_reference: max energy error 0.000000000000e+00 Ry; relative spectrum error 1.369952574208e-13
+PASS: all state counts, finite checks, energies and spectra.

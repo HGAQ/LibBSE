@@ -1,5 +1,6 @@
 #include "utils/memory_views.h"
 #include "aims_screened.h"
+#include "aims_text_parser.h"
 #include "aims_symmetry_all.h"
 #include "interface/librpa_api.h"
 #include "chi0_screening.h"
@@ -104,10 +105,10 @@ std::pair<int, double> lowest_frequency(const fs::path &file, int nfreq)
         {
             continue;
         }
-        std::istringstream s(line);
-        int iw;
-        double omega;
-        if (!(s >> iw >> omega) || iw < 1 || iw > nfreq || !std::isfinite(omega))
+        const char *aims_cursor = line.c_str();
+        const int iw = aims_read_integer(aims_cursor);
+        const double omega = aims_read_real(aims_cursor);
+        if (iw < 1 || iw > nfreq)
         {
             throw std::runtime_error("invalid frequency in " + file.string());
         }
@@ -116,6 +117,10 @@ std::pair<int, double> lowest_frequency(const fs::path &file, int nfreq)
         {
             throw std::runtime_error("inconsistent frequency index in " + file.string());
         }
+    }
+    if (in.bad())
+    {
+        throw std::runtime_error("failed reading aims frequency grid: " + file.string());
     }
     if (frequencies.size() != static_cast<std::size_t>(nfreq))
     {
@@ -130,6 +135,146 @@ std::pair<int, double> lowest_frequency(const fs::path &file, int nfreq)
         }
     }
     return *lowest;
+}
+
+// Read one representative q on its owner. All producer blocks are assembled
+// before any symmetry restoration or collective chi0 screening is performed.
+void read_aims_q_matrix(std::vector<fs::path> aims_paths, const Header &aims_header,
+                        std::vector<Complex> &aims_q_matrix, double &aims_q_omega)
+{
+    std::sort(aims_paths.begin(), aims_paths.end());
+    std::pair<int, double> aims_node{1, std::numeric_limits<double>::quiet_NaN()};
+    if (aims_header.nfreq > 1)
+    {
+        bool aims_found_frequency = false;
+        for (const auto &aims_path : aims_paths)
+        {
+            std::ifstream aims_input(aims_path);
+            if (!aims_input)
+            {
+                throw std::runtime_error("cannot open aims matrix: " + aims_path.string());
+            }
+            std::string aims_line;
+            while (std::getline(aims_input, aims_line))
+            {
+                if (!aims_line.empty() && aims_line[0] != '#')
+                {
+                    aims_node = lowest_frequency(aims_path, aims_header.nfreq);
+                    aims_found_frequency = true;
+                    break;
+                }
+            }
+            if (aims_found_frequency)
+            {
+                break;
+            }
+        }
+        if (!aims_found_frequency)
+        {
+            throw std::runtime_error("aims q point has no matrix entries");
+        }
+    }
+
+    const std::size_t aims_naux = static_cast<std::size_t>(aims_header.naux);
+    aims_q_matrix.assign(aims_naux * aims_naux, Complex{});
+    std::vector<bool> aims_entry_seen(aims_q_matrix.size(), false);
+    auto aims_entry_seen_memory = watch_memory("aims_entry_seen", aims_entry_seen);
+    std::size_t aims_entry_count = 0;
+    for (const auto &aims_path : aims_paths)
+    {
+        std::ifstream aims_input(aims_path);
+        if (!aims_input)
+        {
+            throw std::runtime_error("cannot open aims matrix: " + aims_path.string());
+        }
+        std::string aims_line;
+        while (std::getline(aims_input, aims_line))
+        {
+            if (aims_line.empty() || aims_line[0] == '#')
+            {
+                continue;
+            }
+            const char *aims_cursor = aims_line.c_str();
+            const int aims_iw = aims_read_integer(aims_cursor);
+            const double aims_omega = aims_read_real(aims_cursor);
+            if (aims_iw < 1 || aims_iw > aims_header.nfreq)
+            {
+                throw std::runtime_error("invalid aims frequency index: " + aims_path.string());
+            }
+            if (aims_iw != aims_node.first)
+            {
+                continue;
+            }
+            // A single-frequency file needs no preliminary full-file scan.
+            // Every subsequent selected row must have the same physical omega.
+            if (!std::isfinite(aims_node.second))
+            {
+                aims_node.second = aims_omega;
+            }
+            const int aims_mu = aims_read_integer(aims_cursor);
+            const int aims_nu = aims_read_integer(aims_cursor);
+            const double aims_real = aims_read_real(aims_cursor);
+            const double aims_imag = aims_read_real(aims_cursor);
+            if (aims_mu < 1 || aims_nu < 1 || aims_mu > aims_header.naux ||
+                aims_nu > aims_header.naux || std::abs(aims_omega - aims_node.second) > 1.e-12)
+            {
+                throw std::runtime_error("invalid selected-frequency aims entry: " + aims_path.string());
+            }
+            const std::size_t aims_index =
+                static_cast<std::size_t>(aims_mu - 1) * aims_naux + aims_nu - 1;
+            if (aims_entry_seen[aims_index])
+            {
+                throw std::runtime_error("duplicate aims matrix entry: " + aims_path.string());
+            }
+            aims_entry_seen[aims_index] = true;
+            aims_q_matrix[aims_index] = Complex(aims_real, aims_imag);
+            ++aims_entry_count;
+        }
+        if (aims_input.bad())
+        {
+            throw std::runtime_error("failed reading aims matrix: " + aims_path.string());
+        }
+    }
+    if (aims_entry_count != aims_q_matrix.size())
+    {
+        throw std::runtime_error("missing aims rank block/entries at q " +
+                                 std::to_string(aims_header.iq));
+    }
+    aims_q_omega = aims_node.second;
+}
+
+// All ranks throw the same reader error before entering the next broadcast.
+void check_aims_reader_error(const std::string &aims_local_error, MPI_Comm aims_comm)
+{
+    int aims_rank = 0;
+    MPI_Comm_rank(aims_comm, &aims_rank);
+    int aims_failed_rank = aims_local_error.empty() ? std::numeric_limits<int>::max() : aims_rank;
+    MPI_Allreduce(MPI_IN_PLACE, &aims_failed_rank, 1, MPI_INT, MPI_MIN, aims_comm);
+    if (aims_failed_rank == std::numeric_limits<int>::max())
+    {
+        return;
+    }
+    int aims_error_size = static_cast<int>(aims_local_error.size());
+    MPI_Bcast(&aims_error_size, 1, MPI_INT, aims_failed_rank, aims_comm);
+    std::string aims_shared_error = aims_local_error;
+    aims_shared_error.resize(aims_error_size);
+    MPI_Bcast(aims_shared_error.data(), aims_error_size, MPI_CHAR, aims_failed_rank, aims_comm);
+    throw std::runtime_error("aims parallel reader: " + aims_shared_error);
+}
+
+void broadcast_aims_q_matrix(std::vector<Complex> &aims_q_matrix, int aims_owner,
+                             MPI_Comm aims_comm)
+{
+    // Chunk counts avoid narrowing naux*naux into the MPI int count interface.
+    const std::size_t aims_chunk_limit = 1048576;
+    for (std::size_t aims_offset = 0; aims_offset < aims_q_matrix.size();)
+    {
+        const int aims_chunk_count = static_cast<int>(
+            std::min(aims_chunk_limit, aims_q_matrix.size() - aims_offset));
+        MPI_Bcast(aims_q_matrix.data() + aims_offset, aims_chunk_count,
+                  MPI_C_DOUBLE_COMPLEX, aims_owner, aims_comm);
+        aims_offset += aims_chunk_count;
+    }
 }
 } // namespace
 
@@ -168,36 +313,46 @@ TensorMap<Complex> read_aims_screened_interaction(const InputParameters &options
     std::map<int, Header> headers;
     const std::regex pattern("periodic_gw_" + quantity + "_q_([0-9]+)_rank_([0-9]+)\\.dat");
 
-    for (const auto &entry : fs::directory_iterator(options.screened_dir))
+    std::string aims_discovery_error;
+    try
     {
-        std::smatch match;
-        const auto name = entry.path().filename().string();
-        if (!entry.is_regular_file() || !std::regex_match(name, match, pattern))
+        for (const auto &entry : fs::directory_iterator(options.screened_dir))
         {
-            continue;
+            std::smatch match;
+            const auto name = entry.path().filename().string();
+            if (!entry.is_regular_file() || !std::regex_match(name, match, pattern))
+            {
+                continue;
+            }
+            const auto h = read_header(entry.path(), quantity);
+            if (h.naux != static_cast<int>(dataset.basis_aux.nb_total) || h.iq != std::stoi(match[1]))
+            {
+                throw std::runtime_error("aims W auxiliary dimension/q index mismatch: " +
+                                         entry.path().string());
+            }
+            // h.iq is the producer's index; iq is our grid index. Match fractional
+            // coordinates modulo reciprocal lattice vectors, not file numbering.
+            const int iq = grid_index(h.q, grid);
+            const auto [it, inserted] = headers.emplace(iq, h);
+            if (!inserted && (it->second.iq != h.iq || it->second.nfreq != h.nfreq))
+            {
+                throw std::runtime_error("inconsistent aims W rank-file headers");
+            }
+            files[iq].push_back(entry.path());
         }
-        const auto h = read_header(entry.path(), quantity);
-        if (h.naux != static_cast<int>(dataset.basis_aux.nb_total) || h.iq != std::stoi(match[1]))
-        {
-            throw std::runtime_error("aims W auxiliary dimension/q index mismatch: " +
-                                     entry.path().string());
-        }
-        // h.iq is the producer's index; iq is our grid index. Match fractional
-        // coordinates modulo reciprocal lattice vectors, not file numbering.
-        const int iq = grid_index(h.q, grid);
-        const auto [it, inserted] = headers.emplace(iq, h);
-        if (!inserted && (it->second.iq != h.iq || it->second.nfreq != h.nfreq))
-        {
-            throw std::runtime_error("inconsistent aims W rank-file headers");
-        }
-        files[iq].push_back(entry.path());
-    }
 
-    if (files.empty())
-    {
-        throw std::runtime_error("no matching periodic_gw matrix rank files in " +
-                                 options.screened_dir);
+        if (files.empty())
+        {
+            throw std::runtime_error("no matching periodic_gw matrix rank files in " +
+                                     options.screened_dir);
+        }
+
     }
+    catch (const std::exception &aims_error)
+    {
+        aims_discovery_error = aims_error.what();
+    }
+    check_aims_reader_error(aims_discovery_error, dataset.comm_h.comm);
 
     // An explicit Delta manifest takes precedence over q/-q inference.
     // Its coordinates, not aims file IDs, are matched to the consumer mesh.
@@ -274,190 +429,163 @@ TensorMap<Complex> read_aims_screened_interaction(const InputParameters &options
     double aims_screened_file_read_seconds = 0.0;
     const double aims_screened_q_loop_start_time = MPI_Wtime();
 
-    for (auto &[iq, paths] : files)
+    int aims_reader_count = 1;
+    MPI_Comm_size(dataset.comm_h.comm, &aims_reader_count);
+    const int aims_reader_rank = dataset.comm_h.myid;
+    std::vector<int> aims_q_indices;
+    for (const auto &aims_q_files : files)
     {
-        const double aims_screened_file_read_start_time = MPI_Wtime();
-        std::cout << "Reading file blocks for q index " << iq << "/" << files.size() << std::endl;
-
-        std::sort(paths.begin(), paths.end());
-        // Empty BLACS rank blocks can have headers but no rows. Find a nonempty
-        // block to identify the frequency grid; completeness is checked below.
-        std::pair<int, double> node{};
-        bool found = false;
-        for (const auto &path : paths)
-        {
-            std::ifstream in(path);
-            std::string line;
-            while (std::getline(in, line))
-            {
-                if (!line.empty() && line[0] != '#')
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if (found)
-            {
-                node = lowest_frequency(path, headers.at(iq).nfreq);
-                break;
-            }
-        }
-        if (!found)
-        {
-            throw std::runtime_error("aims W q point has no matrix entries");
-        }
-
-        // node.first is the file frequency index; node.second is omega in Ha.
-        // Select the smallest |omega|, not necessarily frequency index 1.
-        // A nonzero lowest node approximates static W; it is not exactly W(0).
-        // All q matrices must use the same physical frequency before the FT.
-        if (std::isfinite(selected_omega) && std::abs(selected_omega - node.second) > 1.e-12)
-        {
-            throw std::runtime_error("aims W lowest frequencies differ between q points");
-        }
-        selected_omega = node.second;
-
-        // Every MPI rank reconstructs one full naux x naux matrix at a time.
-        // This temporary is replicated; only the retained atom-pair blocks in
-        // aims_screened_q_blocks are restricted by local_i_atoms/local_j_atoms. Thus adding ranks
-        // does not divide the memory required by this dense read buffer.
-        std::vector<Complex> aims_screened_temp(naux * naux);
-        auto aims_screened_temp_memory =
-            libbse::watch_memory("aims_screened_temp", aims_screened_temp);
-        std::vector<bool> aims_screened_entry_seen(naux * naux, false);
-        auto aims_screened_entry_seen_memory =
-            libbse::watch_memory("aims_screened_entry_seen", aims_screened_entry_seen);
-
-        std::size_t count = 0;
-        for (const auto &path : paths)
-        {
-            std::ifstream in(path);
-            std::string line;
-            while (std::getline(in, line))
-            {
-                if (line.empty() || line[0] == '#')
-                {
-                    continue;
-                }
-                std::istringstream s(line);
-                int iw;
-                double omega;
-                if (!(s >> iw >> omega))
-                {
-                    throw std::runtime_error("invalid aims W row in " + path.string());
-                }
-                // Read only the selected frequency, although each rank file
-                // also contains matrices for the other quadrature nodes.
-                if (iw != node.first)
-                {
-                    continue;
-                }
-                std::size_t mu, nu;
-                double re, im;
-                if (!(s >> mu >> nu >> re >> im) || mu == 0 || nu == 0 || mu > naux || nu > naux ||
-                    !std::isfinite(re) || !std::isfinite(im) ||
-                    std::abs(omega - selected_omega) > 1.e-12)
-                {
-                    throw std::runtime_error("invalid selected-frequency W entry in " +
-                                             path.string());
-                }
-                // Global auxiliary indices in aims are 1-based. Convert to a
-                // 0-based row-major buffer; seen detects overlapping pieces.
-                const auto index = (mu - 1) * naux + nu - 1;
-                if (aims_screened_entry_seen[index])
-                {
-                    throw std::runtime_error("duplicate aims W matrix entry: " + path.string());
-                }
-                aims_screened_entry_seen[index] = true;
-                aims_screened_temp[index] = {re, im};
-                ++count;
-            }
-        }
-        // Require all elements, including explicit zeros, rather than silently
-        // treating missing rank files or matrix entries as zero-valued blocks.
-        if (count != naux * naux)
-        {
-            throw std::runtime_error("missing aims W rank block/entries at q " +
-                                     std::to_string(headers.at(iq).iq));
-        }
-        aims_screened_file_read_seconds += MPI_Wtime() - aims_screened_file_read_start_time;
-        // Rotate the complete auxiliary matrix before selecting local atom pairs:
-        // spatial symmetry can move atoms owned by another MPI rank into this block.
-        std::vector<const AimsSymmetryQMapping *> q_targets;
-        if (use_symmetry_all)
-        {
-            q_targets = symmetry_targets.at(iq);
-        }
-        else
-        {
-            q_targets.push_back(nullptr);
-        }
-        for (const auto *q_mapping : q_targets)
-        {
-            int target_iq = iq;
-            std::vector<Complex> aims_reconstructed_operator;
-            auto aims_reconstructed_operator_memory =
-                watch_memory("aims_reconstructed_operator", aims_reconstructed_operator);
-            const std::vector<Complex> *aims_target_operator = &aims_screened_temp;
-            if (q_mapping)
-            {
-                target_iq = grid_index(q_mapping->target_q, grid);
-                auto aims_symmetry_delta = read_aims_symmetry_delta(*q_mapping, naux);
-                auto aims_symmetry_delta_memory =
-                    watch_memory("aims_symmetry_delta", aims_symmetry_delta);
-                aims_reconstructed_operator =
-                    reconstruct_symmetry_operator(aims_screened_temp, aims_symmetry_delta, naux,
-                                                  q_mapping->conjugate_representative);
-                aims_target_operator = &aims_reconstructed_operator;
-            }
-            const auto q = grid[target_iq] * pbc.G;
-            if (quantity == "chi0")
-            {
-                // Restore bare chi0 before screening: target-q Coulomb and Gamma
-                // head/wing corrections must not be inferred by rotating screened W.
-                // The screening object combines chi0 with the matching Coulomb
-                // matrices and computes full W. Replace matrix so both input paths
-                // have the same full-W meaning in the following block extraction.
-                librpa_int::Matz aims_screened_chi0_temp(naux, naux, librpa_int::MAJOR::ROW);
-                auto aims_screened_chi0_temp_memory =
-                    watch_memory("aims_screened_chi0_temp", aims_screened_chi0_temp);
-                std::copy(aims_target_operator->begin(), aims_target_operator->end(),
-                          aims_screened_chi0_temp.ptr());
-                librpa_int::Matz aims_screened_full_w_temp;
-                auto aims_screened_full_w_temp_memory =
-                    watch_memory("aims_screened_full_w_temp", aims_screened_full_w_temp);
-                // Record the screening call separately from file reading and copies.
-                const double aims_screened_chi0_to_w_start_time = MPI_Wtime();
-                aims_screened_full_w_temp =
-                    screening->screen(aims_screened_chi0_temp, q, selected_omega);
-                aims_screened_chi0_to_w_total_seconds +=
-                    MPI_Wtime() - aims_screened_chi0_to_w_start_time;
-                ++aims_screened_chi0_q_count;
-                aims_reconstructed_operator.assign(aims_screened_full_w_temp.ptr(),
-                                                   aims_screened_full_w_temp.ptr() + naux * naux);
-                aims_target_operator = &aims_reconstructed_operator;
-            }
-            for (int iat : local_i_atoms)
-            {
-                for (int jat : local_j_atoms)
-                {
-                    const auto ni = dataset.basis_aux[iat], nj = dataset.basis_aux[jat];
-                    librpa_int::Matz aims_screened_atom_pair_temp(ni, nj, librpa_int::MAJOR::ROW);
-                    for (std::size_t i = 0; i < ni; ++i)
-                    {
-                        for (std::size_t j = 0; j < nj; ++j)
-                        {
-                            aims_screened_atom_pair_temp(i, j) =
-                                (*aims_target_operator)[dataset.basis_aux.get_global_index(iat, i) *
-                                                            naux +
-                                                        dataset.basis_aux.get_global_index(jat, j)];
-                        }
-                    }
-                    aims_screened_q_blocks[iat][jat][q] = std::move(aims_screened_atom_pair_temp);
-                }
-            }
-        }
+        aims_q_indices.push_back(aims_q_files.first);
     }
+    double aims_broadcast_seconds = 0.;
+    double aims_local_parse_seconds = 0.;
+    // At most one owned q and one incoming q per rank, independent of mesh size.
+    for (std::size_t aims_batch_start = 0; aims_batch_start < aims_q_indices.size();
+         aims_batch_start += aims_reader_count)
+    {
+        const double aims_batch_read_start = MPI_Wtime();
+        const std::size_t aims_batch_size = std::min(
+            static_cast<std::size_t>(aims_reader_count), aims_q_indices.size() - aims_batch_start);
+        std::vector<Complex> aims_owned_q_matrix;
+        auto aims_owned_q_matrix_memory = watch_memory("aims_owned_q_matrix", aims_owned_q_matrix);
+        double aims_owned_omega = 0.;
+        std::string aims_read_error;
+        try
+        {
+            if (static_cast<std::size_t>(aims_reader_rank) < aims_batch_size)
+            {
+                const int aims_owned_iq = aims_q_indices[aims_batch_start + aims_reader_rank];
+                read_aims_q_matrix(files.at(aims_owned_iq), headers.at(aims_owned_iq),
+                                   aims_owned_q_matrix, aims_owned_omega);
+            }
+        }
+        catch (const std::exception &aims_error)
+        {
+            aims_read_error = aims_error.what();
+        }
+        aims_local_parse_seconds += MPI_Wtime() - aims_batch_read_start;
+        check_aims_reader_error(aims_read_error, dataset.comm_h.comm);
+        aims_screened_file_read_seconds += MPI_Wtime() - aims_batch_read_start;
+
+        // All ranks consume q in the original order, including collective screen().
+        for (std::size_t aims_batch_offset = 0; aims_batch_offset < aims_batch_size;
+             ++aims_batch_offset)
+        {
+            const int iq = aims_q_indices[aims_batch_start + aims_batch_offset];
+            const int aims_owner = static_cast<int>(aims_batch_offset);
+            const double aims_broadcast_start = MPI_Wtime();
+            double aims_q_omega = aims_owned_omega;
+            std::vector<Complex> aims_screened_temp;
+            auto aims_screened_temp_memory = watch_memory("aims_screened_temp", aims_screened_temp);
+            aims_read_error.clear();
+            try
+            {
+                if (aims_reader_rank == aims_owner)
+                {
+                    aims_screened_temp.swap(aims_owned_q_matrix);
+                }
+                else
+                {
+                    aims_screened_temp.resize(naux * naux);
+                }
+            }
+            catch (const std::exception &aims_error)
+            {
+                aims_read_error = aims_error.what();
+            }
+            check_aims_reader_error(aims_read_error, dataset.comm_h.comm);
+            MPI_Bcast(&aims_q_omega, 1, MPI_DOUBLE, aims_owner, dataset.comm_h.comm);
+            broadcast_aims_q_matrix(aims_screened_temp, aims_owner, dataset.comm_h.comm);
+            aims_broadcast_seconds += MPI_Wtime() - aims_broadcast_start;
+            if (std::isfinite(selected_omega) && std::abs(selected_omega - aims_q_omega) > 1.e-12)
+            {
+                throw std::runtime_error("aims W lowest frequencies differ between q points");
+            }
+            selected_omega = aims_q_omega;
+            if (aims_reader_rank == 0)
+            {
+                std::cout << "Reading file blocks for q index " << iq << "/" << files.size()
+                          << " (reader rank " << aims_owner << ")" << std::endl;
+            }
+            // Rotate the complete auxiliary matrix before selecting local atom pairs:
+            // spatial symmetry can move atoms owned by another MPI rank into this block.
+            std::vector<const AimsSymmetryQMapping *> q_targets;
+            if (use_symmetry_all)
+            {
+                q_targets = symmetry_targets.at(iq);
+            }
+            else
+            {
+                q_targets.push_back(nullptr);
+            }
+            for (const auto *q_mapping : q_targets)
+            {
+                int target_iq = iq;
+                std::vector<Complex> aims_reconstructed_operator;
+                auto aims_reconstructed_operator_memory =
+                    watch_memory("aims_reconstructed_operator", aims_reconstructed_operator);
+                const std::vector<Complex> *aims_target_operator = &aims_screened_temp;
+                if (q_mapping)
+                {
+                    target_iq = grid_index(q_mapping->target_q, grid);
+                    auto aims_symmetry_delta = read_aims_symmetry_delta(*q_mapping, naux);
+                    auto aims_symmetry_delta_memory =
+                        watch_memory("aims_symmetry_delta", aims_symmetry_delta);
+                    aims_reconstructed_operator =
+                        reconstruct_symmetry_operator(aims_screened_temp, aims_symmetry_delta, naux,
+                                                      q_mapping->conjugate_representative);
+                    aims_target_operator = &aims_reconstructed_operator;
+                }
+                const auto q = grid[target_iq] * pbc.G;
+                if (quantity == "chi0")
+                {
+                    // Restore bare chi0 before screening: target-q Coulomb and Gamma
+                    // head/wing corrections must not be inferred by rotating screened W.
+                    // The screening object combines chi0 with the matching Coulomb
+                    // matrices and computes full W. Replace matrix so both input paths
+                    // have the same full-W meaning in the following block extraction.
+                    librpa_int::Matz aims_screened_chi0_temp(naux, naux, librpa_int::MAJOR::ROW);
+                    auto aims_screened_chi0_temp_memory =
+                        watch_memory("aims_screened_chi0_temp", aims_screened_chi0_temp);
+                    std::copy(aims_target_operator->begin(), aims_target_operator->end(),
+                              aims_screened_chi0_temp.ptr());
+                    librpa_int::Matz aims_screened_full_w_temp;
+                    auto aims_screened_full_w_temp_memory =
+                        watch_memory("aims_screened_full_w_temp", aims_screened_full_w_temp);
+                    // Record the screening call separately from file reading and copies.
+                    const double aims_screened_chi0_to_w_start_time = MPI_Wtime();
+                    aims_screened_full_w_temp =
+                        screening->screen(aims_screened_chi0_temp, q, selected_omega);
+                    aims_screened_chi0_to_w_total_seconds +=
+                        MPI_Wtime() - aims_screened_chi0_to_w_start_time;
+                    ++aims_screened_chi0_q_count;
+                    aims_reconstructed_operator.assign(aims_screened_full_w_temp.ptr(),
+                                                       aims_screened_full_w_temp.ptr() + naux * naux);
+                    aims_target_operator = &aims_reconstructed_operator;
+                }
+                for (int iat : local_i_atoms)
+                {
+                    for (int jat : local_j_atoms)
+                    {
+                        const auto ni = dataset.basis_aux[iat], nj = dataset.basis_aux[jat];
+                        librpa_int::Matz aims_screened_atom_pair_temp(ni, nj, librpa_int::MAJOR::ROW);
+                        for (std::size_t i = 0; i < ni; ++i)
+                        {
+                            for (std::size_t j = 0; j < nj; ++j)
+                            {
+                                aims_screened_atom_pair_temp(i, j) =
+                                    (*aims_target_operator)[dataset.basis_aux.get_global_index(iat, i) *
+                                                                naux +
+                                                            dataset.basis_aux.get_global_index(jat, j)];
+                            }
+                        }
+                        aims_screened_q_blocks[iat][jat][q] = std::move(aims_screened_atom_pair_temp);
+                    }
+                }
+            }
+        }
+
+    } // batched q reads
 
     // Accumulate screening-call wall times across q points, then report once.
     // This is rank-0 elapsed time, excluding reading, copies and q-to-R FT.
@@ -472,6 +600,7 @@ TensorMap<Complex> read_aims_screened_interaction(const InputParameters &options
         std::cout.flags(aims_screened_output_flags);
         std::cout.precision(aims_screened_output_precision);
     }
+
     if (dataset.comm_h.myid == 0)
     {
         std::cout << "Finished reading FHI-aims " << quantity << " data and preparing full W(q).\n"
@@ -484,7 +613,10 @@ TensorMap<Complex> read_aims_screened_interaction(const InputParameters &options
                   << pbc.period.z << '\n'
                   << "  BSE k-points: " << dataset.mf_band.get_n_kpoints() << '\n'
                   << "  | Time of q loop on rank 0: " << MPI_Wtime() - aims_screened_q_loop_start_time
-                  << " s, of which text parsing: " << aims_screened_file_read_seconds << " s\n";
+                  << " s, of which text parsing: " << aims_screened_file_read_seconds << " s\n"
+                  << "  | Batched reader rank 0: local parsing " << aims_local_parse_seconds
+                  << " s, matrix broadcasts " << aims_broadcast_seconds
+                  << " s (text parsing above includes batch synchronization)\n";
     }
     // Do not add V: the aims writer exports W = Wc + v_cut, in Hartree.
     // W(R,iw0) = (1/Nq) sum_q exp(-2*pi*i*q.R) W(q,iw0).

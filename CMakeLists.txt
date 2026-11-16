@@ -142,6 +142,11 @@ if(LIBBSE_BUILD_TESTING)
   set_tests_properties(LibBSE_chi0_screening_serial LibBSE_chi0_screening_mpi
     PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
 
+  add_executable(test_aims_text_parser regression_test/general_testcase/test_aims_text_parser.cpp)
+  target_include_directories(test_aims_text_parser PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_compile_features(test_aims_text_parser PRIVATE cxx_std_17)
+  add_test(NAME LibBSE_aims_text_parser COMMAND test_aims_text_parser)
+
   add_executable(test_aims_screened regression_test/general_testcase/test_aims_screened.cpp)
   add_executable(test_aims_symmetry_all
     regression_test/general_testcase/test_aims_symmetry_all.cpp src/io/aims_symmetry_all.cpp src/io/symmetry_matrix.cpp)
@@ -155,6 +160,10 @@ if(LIBBSE_BUILD_TESTING)
   add_test(NAME LibBSE_aims_screened_serial COMMAND test_aims_screened)
   add_test(NAME LibBSE_aims_screened_mpi
     COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 $<TARGET_FILE:test_aims_screened>)
+  add_test(NAME LibBSE_aims_screened_mpi3
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 $<TARGET_FILE:test_aims_screened>)
+  set_tests_properties(LibBSE_aims_screened_mpi3 PROPERTIES TIMEOUT 120
+    ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=2")
   set_tests_properties(LibBSE_aims_screened_serial LibBSE_aims_screened_mpi
     PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=2")
 
