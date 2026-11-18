@@ -383,8 +383,25 @@ void sqrt_coulomb(const std::string &coulomb_eigensolver, Matz &coulomb_local,
                   std::size_t &coulomb_n_filtered, double *coulomb_eigenvalues,
                   bool coulomb_real_gamma)
 {
+    // ELPA needs at least one local row and column on every rank. A tiny
+    // auxiliary basis (n_aux smaller than the process grid times the block
+    // size) leaves some ranks empty; use the ScaLAPACK path there.
+    int coulomb_local_block_nonempty =
+        (coulomb_descriptor.m_loc() > 0 && coulomb_descriptor.n_loc() > 0) ? 1 : 0;
+    int coulomb_all_blocks_nonempty = 0;
+    MPI_Allreduce(&coulomb_local_block_nonempty, &coulomb_all_blocks_nonempty, 1, MPI_INT,
+                  MPI_MIN, coulomb_descriptor.comm());
+    const bool coulomb_use_elpa =
+        coulomb_eigensolver == "elpa" && coulomb_all_blocks_nonempty == 1;
+    if (coulomb_descriptor.myprow() == 0 && coulomb_descriptor.mypcol() == 0)
+    {
+        std::cout << "Coulomb square root eigensolver: "
+                  << (coulomb_use_elpa ? "elpa" : "scalapack")
+                  << (coulomb_real_gamma ? " (real Gamma)" : "") << '\n';
+    }
+
     // V^(1/2), dropping negative (numerically zero) eigenvalues: threshold 0.
-    if (coulomb_eigensolver == "elpa")
+    if (coulomb_use_elpa)
     {
         power_coulomb_elpa(coulomb_local, coulomb_descriptor, coulomb_eigenvectors_local,
                            coulomb_n_filtered, coulomb_eigenvalues, .5, 0., coulomb_real_gamma);
