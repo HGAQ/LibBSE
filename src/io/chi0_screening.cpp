@@ -1,5 +1,6 @@
 #include "utils/memory_views.h"
 #include "chi0_screening.h"
+#include "bse/elpa_solver.h"
 #include <../src/api/dataset_helper.h>
 #include <../src/math/utils_matrix_m_mpi.h>
 #include <algorithm>
@@ -278,6 +279,129 @@ double screening_node_available_memory_gib()
     }
     return -1.;
 }
+
+// Coulomb matrix power with the ELPA two-stage solver. Same conventions as
+// LibRPA power_hemat_blacs_desc / power_hemat_blacs_real (pzheev / pdsyev),
+// which this replaces for the chi0 screening path:
+//   V = Z * diag(lambda) * Z^H, lambda in DESCENDING order (column 0 of Z is
+//   the largest Coulomb eigenvector, needed by the Gamma head/wing step),
+//   eigenvalues below coulomb_threshold are dropped (set to zero power),
+//   V^p = Z * diag(lambda^p) * Z^H is written back into coulomb_local.
+// coulomb_real_gamma: diagonalize only Re(V), as LibRPA does at q = Gamma.
+void power_coulomb_elpa(Matz &coulomb_local, const librpa_int::ArrayDesc &coulomb_descriptor,
+                        Matz &coulomb_eigenvectors_local, std::size_t &coulomb_n_filtered,
+                        double *coulomb_eigenvalues, double coulomb_power,
+                        double coulomb_threshold, bool coulomb_real_gamma)
+{
+    const int n = coulomb_descriptor.m();
+
+    // ELPA returns ascending eigenvalues. Diagonalize -V so that the
+    // ascending order of -lambda is the descending order of lambda.
+    if (coulomb_real_gamma)
+    {
+        auto coulomb_real_local = coulomb_local.get_real();
+        coulomb_real_local *= -1.0;
+        auto coulomb_real_eigenvectors_local =
+            librpa_int::init_local_mat<double>(coulomb_descriptor, librpa_int::MAJOR::COL);
+        // (-Re V) * Z = Z * diag(-lambda)
+        solve_symmetric_eigenvectors_elpa(coulomb_real_local.ptr(), coulomb_descriptor,
+                                          coulomb_eigenvalues,
+                                          coulomb_real_eigenvectors_local.ptr());
+        coulomb_eigenvectors_local = coulomb_real_eigenvectors_local.to_complex();
+    }
+    else
+    {
+        // ELPA overwrites its input; coulomb_local is rebuilt below anyway.
+        coulomb_local *= -1.0;
+        // (-V) * Z = Z * diag(-lambda)
+        solve_hermitian_eigenvectors_elpa(coulomb_local.ptr(), coulomb_descriptor,
+                                          coulomb_eigenvalues,
+                                          coulomb_eigenvectors_local.ptr());
+    }
+    // Restore the sign: lambda, now in descending order.
+    for (int coulomb_index = 0; coulomb_index < n; ++coulomb_index)
+    {
+        coulomb_eigenvalues[coulomb_index] *= -1.0;
+    }
+
+    // Number of trailing (smallest) eigenvalues below the threshold.
+    coulomb_n_filtered = static_cast<std::size_t>(n);
+    for (int coulomb_index = 0; coulomb_index < n; ++coulomb_index)
+    {
+        if (coulomb_eigenvalues[n - 1 - coulomb_index] >= coulomb_threshold)
+        {
+            coulomb_n_filtered = static_cast<std::size_t>(coulomb_index);
+            break;
+        }
+    }
+    const std::size_t coulomb_n_kept = static_cast<std::size_t>(n) - coulomb_n_filtered;
+
+    // lambda^p for kept eigenvalues, zero for filtered ones.
+    std::vector<double> coulomb_powered_eigenvalues(static_cast<std::size_t>(n), 0.0);
+    int coulomb_warning_count = 0;
+    for (std::size_t coulomb_index = 0; coulomb_index < coulomb_n_kept; ++coulomb_index)
+    {
+        if (coulomb_eigenvalues[coulomb_index] < 0.0 && coulomb_power != std::floor(coulomb_power))
+        {
+            coulomb_warning_count += 1;
+        }
+        coulomb_powered_eigenvalues[coulomb_index] =
+            std::pow(coulomb_eigenvalues[coulomb_index], coulomb_power);
+    }
+    if (coulomb_warning_count > 0 && coulomb_descriptor.myprow() == 0
+        && coulomb_descriptor.mypcol() == 0)
+    {
+        std::cout << "Warning: " << coulomb_warning_count
+                  << " unfiltered negative Coulomb eigenvalues with non-integer power "
+                  << coulomb_power << '\n';
+    }
+
+    // Scaled eigenvectors: column j of Z times lambda_j^p.
+    auto coulomb_scaled_eigenvectors_local = coulomb_eigenvectors_local.copy();
+    for (int local_col = 0; local_col < coulomb_descriptor.n_loc(); ++local_col)
+    {
+        const int global_col = coulomb_descriptor.indx_l2g_c(local_col);
+        const double coulomb_column_scale =
+            coulomb_powered_eigenvalues[static_cast<std::size_t>(global_col)];
+        for (int local_row = 0; local_row < coulomb_descriptor.m_loc(); ++local_row)
+        {
+            coulomb_scaled_eigenvectors_local(local_row, local_col) *= coulomb_column_scale;
+        }
+    }
+
+    // V^p = Z * (Z * diag(lambda^p))^H
+    librpa_int::ScalapackConnector::pgemm_f(
+        'N', 'C', n, n, n, 1., coulomb_eigenvectors_local.ptr(), 1, 1, coulomb_descriptor.desc,
+        coulomb_scaled_eigenvectors_local.ptr(), 1, 1, coulomb_descriptor.desc, 0.,
+        coulomb_local.ptr(), 1, 1, coulomb_descriptor.desc);
+}
+
+// Coulomb square root dispatcher: "elpa" (default, two-stage, threaded) or
+// "scalapack" (LibRPA pzheev / pdsyev, the former path, kept for comparison).
+void sqrt_coulomb(const std::string &coulomb_eigensolver, Matz &coulomb_local,
+                  librpa_int::ArrayDesc &coulomb_descriptor, Matz &coulomb_eigenvectors_local,
+                  std::size_t &coulomb_n_filtered, double *coulomb_eigenvalues,
+                  bool coulomb_real_gamma)
+{
+    // V^(1/2), dropping negative (numerically zero) eigenvalues: threshold 0.
+    if (coulomb_eigensolver == "elpa")
+    {
+        power_coulomb_elpa(coulomb_local, coulomb_descriptor, coulomb_eigenvectors_local,
+                           coulomb_n_filtered, coulomb_eigenvalues, .5, 0., coulomb_real_gamma);
+    }
+    else if (coulomb_real_gamma)
+    {
+        librpa_int::power_hemat_blacs_real(coulomb_local, coulomb_descriptor,
+                                           coulomb_eigenvectors_local, coulomb_descriptor,
+                                           coulomb_n_filtered, coulomb_eigenvalues, .5, 0.);
+    }
+    else
+    {
+        librpa_int::power_hemat_blacs_desc(coulomb_local, coulomb_descriptor,
+                                           coulomb_eigenvectors_local, coulomb_descriptor,
+                                           coulomb_n_filtered, coulomb_eigenvalues, .5, 0.);
+    }
+}
 } // namespace
 
 Matz screen_chi0(const Matz &screening_chi0, Matz screening_coulomb)
@@ -538,30 +662,14 @@ Matz Chi0Screening::screen(const Matz &screening_chi0, const librpa_int::Vector3
     const bool gamma =
         screening_full_metric && std::abs(q.x) + std::abs(q.y) + std::abs(q.z) < 1.e-10;
     // sqrt(V_cut) = Z_cut * diag(lambda_cut^(1/2)) * Z_cut^H.
-    if (gamma)
-    {
-        power_hemat_blacs_real(screening_sqrt_cut_local, desc, screening_eigenvectors_local, desc,
-                               filtered, screening_eigenvalues.data(), .5, 0.);
-    }
-    else
-    {
-        power_hemat_blacs_desc(screening_sqrt_cut_local, desc, screening_eigenvectors_local, desc,
-                               filtered, screening_eigenvalues.data(), .5, 0.);
-    }
+    sqrt_coulomb(options_.chi0_coulomb_eigensolver, screening_sqrt_cut_local, desc,
+                 screening_eigenvectors_local, filtered, screening_eigenvalues.data(), gamma);
     if (screening_full_metric)
     {
         // sqrt(V_full) = Z_full * diag(lambda_full^(1/2)) * Z_full^H.
         // The eigenvectors of V_full stay available for the Gamma head/wing step.
-        if (gamma)
-        {
-            power_hemat_blacs_real(screening_sqrt_full_local, desc, screening_eigenvectors_local,
-                                   desc, filtered, screening_eigenvalues.data(), .5, 0.);
-        }
-        else
-        {
-            power_hemat_blacs_desc(screening_sqrt_full_local, desc, screening_eigenvectors_local,
-                                   desc, filtered, screening_eigenvalues.data(), .5, 0.);
-        }
+        sqrt_coulomb(options_.chi0_coulomb_eigensolver, screening_sqrt_full_local, desc,
+                     screening_eigenvectors_local, filtered, screening_eigenvalues.data(), gamma);
     }
     else
     {

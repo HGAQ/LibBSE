@@ -83,6 +83,48 @@ void copy_pair_block(const std::vector<double> &source,
 
 } // namespace
 
+void solve_hermitian_eigenvectors_elpa(Complex *matrix_local,
+                                       const librpa_int::ArrayDesc &descriptor,
+                                       double *eigenvalues,
+                                       Complex *eigenvectors_local)
+{
+    if (descriptor.m() != descriptor.n())
+        throw std::invalid_argument("ELPA Hermitian eigensolver needs a square matrix");
+    if (descriptor.mb() != descriptor.nb())
+        throw std::invalid_argument("ELPA needs equal row and column block sizes");
+
+    int status = ELPA_OK;
+    // Request all eigenpairs: nev = matrix dimension.
+    const auto elpa_hermitian_handle = make_elpa_handle(descriptor, descriptor.m());
+    // matrix * Z = Z * diag(lambda), lambda ascending.
+    elpa_eigenvectors(elpa_hermitian_handle, matrix_local, eigenvalues,
+                      eigenvectors_local, &status);
+    check_elpa(status, "Hermitian eigenvectors");
+    elpa_deallocate(elpa_hermitian_handle, &status);
+    check_elpa(status, "deallocation");
+}
+
+void solve_symmetric_eigenvectors_elpa(double *matrix_local,
+                                       const librpa_int::ArrayDesc &descriptor,
+                                       double *eigenvalues,
+                                       double *eigenvectors_local)
+{
+    if (descriptor.m() != descriptor.n())
+        throw std::invalid_argument("ELPA symmetric eigensolver needs a square matrix");
+    if (descriptor.mb() != descriptor.nb())
+        throw std::invalid_argument("ELPA needs equal row and column block sizes");
+
+    int status = ELPA_OK;
+    // Request all eigenpairs: nev = matrix dimension.
+    const auto elpa_symmetric_handle = make_elpa_handle(descriptor, descriptor.m());
+    // matrix * Z = Z * diag(lambda), lambda ascending.
+    elpa_eigenvectors(elpa_symmetric_handle, matrix_local, eigenvalues,
+                      eigenvectors_local, &status);
+    check_elpa(status, "symmetric eigenvectors");
+    elpa_deallocate(elpa_symmetric_handle, &status);
+    check_elpa(status, "deallocation");
+}
+
 EigenSolution solve_tda_elpa(std::vector<Complex> &matrix,
                              librpa_int::ArrayDesc &descriptor,
                              int nstates)

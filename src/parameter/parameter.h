@@ -38,6 +38,9 @@ struct InputParameters
     // chi0 paths use full V inside epsilon and cut V outside, as in LibRPA GW.
     std::string screened_format = "librpa_wc";
     std::string chi0_coulomb_metric = "full";
+    // Eigensolver for the Coulomb square root in chi0 screening:
+    // elpa (two-stage, OpenMP) or scalapack (LibRPA pzheev/pdsyev, former path).
+    std::string chi0_coulomb_eigensolver = "elpa";
     bool chi0_headwing = true;
     bool bse_w_boundary_average = false; // symmetric even-grid endpoint images for W
     bool out_screening_matrices = false;

@@ -469,6 +469,12 @@ W = sqrt(V_cut) ε^(-1) sqrt(V_cut)
 
 矩阵平方根和求逆在完整辅助基空间执行，不是逐元素开方，也不能对每个原子块单独求逆。full V 用于介电屏蔽内部，cut V 处理外部相互作用。`single_cut` 把上式内部的 V_full 也换成 V_cut，改变的是屏蔽约定，适用于不同 Coulomb 约定的对照计算，其结果通常与生产程序的 GW 屏蔽不同。04–06 选 `full`，以保持所采用的 LibRPA 屏蔽约定。
 
+#### `chi0_coulomb_eigensolver`：Coulomb 平方根的本征求解器
+
+**类型：** 字符串。**默认值：** `elpa`。**取值：** `elpa`、`scalapack`。**适用条件：** χ₀ 输入。
+
+sqrt(V) 由 V 的完整本征分解得到：V = Z diag(λ) Z^H，sqrt(V) = Z diag(λ^(1/2)) Z^H，λ < 0 的数值零模被丢弃。`elpa` 使用 ELPA 两步法（OpenMP 线程数取 `OMP_NUM_THREADS`）；`scalapack` 使用 LibRPA 原来的 `pzheev`/`pdsyev`（QR 迭代），只用于对照。两者的本征值排序（降序）、Gamma 点只对角化 Re V 的约定和过滤阈值都相同，结果只差舍入误差。n_aux≈17664 时 `pzheev` 每个 q 约 2000 s 以上且基本单线程，因此默认使用 ELPA。
+
 #### `chi0_headwing`：χ₀ 的解析 head/wing 修正
 
 **类型：** 布尔值。**默认值：** `true`。**适用条件：** χ₀ 输入；启用时要求 `chi0_coulomb_metric full`。

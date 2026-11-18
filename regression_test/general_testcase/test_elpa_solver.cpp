@@ -413,6 +413,91 @@ void test_full_solver_residual_and_metric(
         }
 }
 
+// Coulomb square-root eigensolver helpers: all eigenpairs, ascending order,
+// residual H z = lambda z and orthonormal Z^H Z = I, complex and real.
+void test_coulomb_eigenvector_helpers(const librpa_int::BlacsCtxtHandler &blacs)
+{
+    constexpr int dimension = 7;
+    auto descriptor = make_descriptor(blacs, dimension);
+    const auto coulomb_test_hermitian = deterministic_hermitian(dimension);
+    const std::size_t coulomb_test_local_size =
+        static_cast<std::size_t>(descriptor.lld()) * descriptor.n_loc();
+
+    // Complex Hermitian helper.
+    auto coulomb_test_matrix_local = localize(coulomb_test_hermitian, descriptor);
+    std::vector<Complex> coulomb_test_vectors_local(coulomb_test_local_size);
+    std::vector<double> coulomb_test_eigenvalues(dimension);
+    libbse::solve_hermitian_eigenvectors_elpa(coulomb_test_matrix_local.data(), descriptor,
+                                              coulomb_test_eigenvalues.data(),
+                                              coulomb_test_vectors_local.data());
+    const auto coulomb_test_vectors = globalize(coulomb_test_vectors_local, descriptor);
+
+    // Real symmetric helper on Re(H); the real local arrays use the same layout.
+    std::vector<double> coulomb_test_real_local(coulomb_test_local_size);
+    const auto coulomb_test_hermitian_local = localize(coulomb_test_hermitian, descriptor);
+    for (std::size_t index = 0; index < coulomb_test_local_size; ++index)
+    {
+        coulomb_test_real_local[index] = coulomb_test_hermitian_local[index].real();
+    }
+    std::vector<double> coulomb_test_real_vectors_local(coulomb_test_local_size);
+    std::vector<double> coulomb_test_real_eigenvalues(dimension);
+    libbse::solve_symmetric_eigenvectors_elpa(coulomb_test_real_local.data(), descriptor,
+                                              coulomb_test_real_eigenvalues.data(),
+                                              coulomb_test_real_vectors_local.data());
+    std::vector<Complex> coulomb_test_real_vectors_as_complex_local(coulomb_test_local_size);
+    for (std::size_t index = 0; index < coulomb_test_local_size; ++index)
+    {
+        coulomb_test_real_vectors_as_complex_local[index] =
+            Complex(coulomb_test_real_vectors_local[index], 0.0);
+    }
+    const auto coulomb_test_real_vectors =
+        globalize(coulomb_test_real_vectors_as_complex_local, descriptor);
+
+    for (int case_index = 0; case_index < 2; ++case_index)
+    {
+        const bool real_case = case_index == 1;
+        const auto &eigenvalues = real_case ? coulomb_test_real_eigenvalues
+                                            : coulomb_test_eigenvalues;
+        const auto &vectors = real_case ? coulomb_test_real_vectors : coulomb_test_vectors;
+        for (int state = 1; state < dimension; ++state)
+            require(eigenvalues[state] >= eigenvalues[state - 1],
+                    "ELPA Coulomb eigenvalues are not ascending");
+        for (int state = 0; state < dimension; ++state)
+        {
+            for (int row = 0; row < dimension; ++row)
+            {
+                // (H z)_row, with H = Re(H) in the real case
+                Complex coulomb_test_hz{};
+                for (int column = 0; column < dimension; ++column)
+                {
+                    Complex coulomb_test_element =
+                        coulomb_test_hermitian[static_cast<std::size_t>(row) + column * dimension];
+                    if (real_case) coulomb_test_element = coulomb_test_element.real();
+                    coulomb_test_hz += coulomb_test_element
+                                       * vectors[static_cast<std::size_t>(column)
+                                                 + state * dimension];
+                }
+                const Complex coulomb_test_lambda_z =
+                    eigenvalues[state] * vectors[static_cast<std::size_t>(row) + state * dimension];
+                require_close(coulomb_test_hz, coulomb_test_lambda_z, 1.0e-10,
+                              "ELPA Coulomb eigenpair residual exceeds tolerance");
+            }
+            for (int other_state = 0; other_state < dimension; ++other_state)
+            {
+                // (Z^H Z)_{state, other_state} = delta
+                Complex coulomb_test_overlap{};
+                for (int row = 0; row < dimension; ++row)
+                    coulomb_test_overlap +=
+                        std::conj(vectors[static_cast<std::size_t>(row) + state * dimension])
+                        * vectors[static_cast<std::size_t>(row) + other_state * dimension];
+                require_close(coulomb_test_overlap,
+                              Complex(state == other_state ? 1.0 : 0.0, 0.0), 1.0e-12,
+                              "ELPA Coulomb eigenvectors are not orthonormal");
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -439,6 +524,7 @@ int main(int argc, char **argv)
             test_skew_solver_reference(blacs);
             test_tda_solver_residual(blacs);
             test_full_solver_residual_and_metric(blacs);
+            test_coulomb_eigenvector_helpers(blacs);
         }
     }
     catch (const std::exception &error)

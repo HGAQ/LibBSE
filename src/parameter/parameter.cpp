@@ -202,6 +202,8 @@ void Parameter::parse(const std::string &contents, const fs::path &base_director
     if (auto value = take("screened_format"); !value.empty())
         inp.screened_format = lower(value);
     if (auto value = take("chi0_coulomb_metric"); !value.empty()) inp.chi0_coulomb_metric = lower(value);
+    if (auto value = take("chi0_coulomb_eigensolver"); !value.empty())
+        inp.chi0_coulomb_eigensolver = lower(value);
     if (auto value = take("out_screening_matrices"); !value.empty()) inp.out_screening_matrices = parse_boolean("out_screening_matrices", value);
     if (auto value = take("bse_w_boundary_average"); !value.empty()) inp.bse_w_boundary_average = parse_boolean("bse_w_boundary_average", value);
     if (auto value = take("chi0_headwing"); !value.empty()) inp.chi0_headwing = parse_boolean("chi0_headwing", value);
@@ -271,6 +273,8 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
         throw std::invalid_argument("W boundary averaging currently requires static screening");
     if (inp.chi0_coulomb_metric != "full" && inp.chi0_coulomb_metric != "single_cut")
         throw std::invalid_argument("chi0_coulomb_metric must be full or single_cut");
+    if (inp.chi0_coulomb_eigensolver != "elpa" && inp.chi0_coulomb_eigensolver != "scalapack")
+        throw std::invalid_argument("chi0_coulomb_eigensolver must be elpa or scalapack");
     if (inp.screened_format.find("chi0") != std::string::npos && inp.chi0_headwing && inp.chi0_coulomb_metric != "full")
         throw std::invalid_argument("LibRPA head/wing requires chi0_coulomb_metric full");
     if (!std::isfinite(inp.bse_plasma_energy_ev) || inp.bse_plasma_energy_ev < 0)
@@ -378,6 +382,7 @@ void Parameter::print(std::ostream &output) const
            << "  qp_format: " << inp.qp_format << '\n'
            << "  screened_format: " << inp.screened_format << '\n'
            << "  chi0_coulomb_metric: " << inp.chi0_coulomb_metric << '\n'
+           << "  chi0_coulomb_eigensolver: " << inp.chi0_coulomb_eigensolver << '\n'
            << "  chi0_headwing: " << inp.chi0_headwing << '\n'
            << "  bse_plasma_energy_ev: " << inp.bse_plasma_energy_ev << '\n'
            << "  screened_dir: " << inp.screened_dir << '\n'
