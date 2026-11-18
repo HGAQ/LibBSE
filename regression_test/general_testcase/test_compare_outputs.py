@@ -1,10 +1,13 @@
 """Check that regression comparisons accept gauge freedom and detect real changes."""
 import unittest
+import tempfile
+import struct
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 import numpy as np
 from compare_outputs import compare_eigenpairs,compare_screening
+from run_case import screening_to_cache
 
 class EigenpairComparisonTests(unittest.TestCase):
     def setUp(self):
@@ -41,6 +44,30 @@ class EigenpairComparisonTests(unittest.TestCase):
         candidate_screening={(0.,0.,0.,0.):(np.eye(2),np.diag([.6,.8]))}
         self.assertFalse(compare_screening(reference_screening,candidate_screening)['pass'])
         with self.assertRaises(ValueError): compare_screening(reference_screening,{})
+
+class FullWCacheTests(unittest.TestCase):
+    def test_static_cache_matches_cpp_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sqrt_cut = np.diag([2., 3.]).astype(np.complex128)
+            inverse = np.array([[.5, .1j], [-.1j, .8]], dtype=np.complex128)
+            with (root / 'screening_q_0.bin').open('wb') as handle:
+                np.array([2], dtype=np.int32).tofile(handle)
+                np.zeros(4, dtype=np.float64).tofile(handle)
+                sqrt_cut.tofile(handle)
+                inverse.tofile(handle)
+            cache = root / 'cache'
+            result = screening_to_cache(root, cache, 0.)
+            self.assertEqual(result['format'], 'full_w_binary')
+            data = (cache / 'full_w_q_000001.bin').read_bytes()
+            # Check the fixed header offsets used by the C++ reader.
+            self.assertEqual(len(data), 64 + 4 * 16)
+            self.assertEqual(data[:16], b'LIBBSE_FULL_W_V1')
+            self.assertEqual(struct.unpack_from('=4i', data, 16), (2, 1, 1, 1))
+            self.assertEqual(struct.unpack_from('=4d', data, 32), (0., 0., 0., 0.))
+            matrix = np.frombuffer(data, dtype=np.complex128, offset=64).reshape(2, 2)
+            np.testing.assert_allclose(matrix, sqrt_cut @ inverse @ sqrt_cut,
+                                       rtol=0, atol=1.e-14)
 
 if __name__=='__main__':
     unittest.main()
