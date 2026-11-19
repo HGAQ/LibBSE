@@ -2,6 +2,8 @@
 #include "io/full_w_binary.h"
 #include <cstdint>
 #include "interface/librpa_api.h"
+#include <../src/core/epsilon.h>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -104,6 +106,103 @@ void write_single_frequency_fixture(const fs::path &aims_root)
     }
 }
 
+// LibBSE's OpenMP W(q) -> W(R) transform must reproduce LibRPA FT_Wc_q2R
+// (no symmetry context) element by element: non-orthogonal cell, 3x2x1 BvK
+// mesh, two atoms with 2 and 3 auxiliary functions, and stars containing an
+// inverse member (q_bz != q) so the conj(W(q)) branch is exercised.
+void test_screened_fourier_matches_librpa()
+{
+    librpa_int::Dataset fourier_test_dataset(MPI_COMM_WORLD);
+    fourier_test_dataset.basis_aux = librpa_int::AtomicBasis(std::vector<std::size_t>{2, 3});
+    fourier_test_dataset.pbc.set_latvec({1.0, 0.1, 0.0, 0.2, 1.1, 0.0, 0.0, 0.3, 1.4});
+    fourier_test_dataset.pbc.set_period(3, 2, 1);
+
+    // Stored q points (arbitrary values in LibRPA's reciprocal units) and stars.
+    const std::vector<librpa_int::Vector3_Order<double>> fourier_test_q_points = {
+        {0.0, 0.0, 0.0}, {0.31, 0.0, 0.0}, {0.0, 0.43, 0.05}, {0.27, 0.19, 0.0}};
+    for (const auto &fourier_test_q : fourier_test_q_points)
+    {
+        std::vector<librpa_int::Vector3_Order<double>> fourier_test_star = {fourier_test_q};
+        if (fourier_test_q.x + fourier_test_q.y + fourier_test_q.z > 0.0)
+        {
+            // -q is the inverse star member: contributes conj(W(q)).
+            fourier_test_star.push_back(
+                librpa_int::Vector3_Order<double>(-fourier_test_q.x, -fourier_test_q.y,
+                                                  -fourier_test_q.z));
+        }
+        fourier_test_dataset.pbc.map_irk_ks[fourier_test_q] = fourier_test_star;
+    }
+
+    // Deterministic complex W(q) blocks for all four atom pairs.
+    LibRPA_API::ScreenedQBlocks fourier_test_w_q;
+    for (int iat = 0; iat < 2; ++iat)
+    {
+        for (int jat = 0; jat < 2; ++jat)
+        {
+            const int n_mu = static_cast<int>(fourier_test_dataset.basis_aux[iat]);
+            const int n_nu = static_cast<int>(fourier_test_dataset.basis_aux[jat]);
+            for (std::size_t iq = 0; iq < fourier_test_q_points.size(); ++iq)
+            {
+                librpa_int::Matz fourier_test_block(n_mu, n_nu, librpa_int::MAJOR::ROW);
+                for (int i = 0; i < n_mu; ++i)
+                {
+                    for (int j = 0; j < n_nu; ++j)
+                    {
+                        fourier_test_block(i, j) = libbse::Complex(
+                            std::sin(1.0 + i + 2.0 * j + 3.0 * iq + 5.0 * iat + 7.0 * jat),
+                            std::cos(0.5 + 2.0 * i + j + iq + 3.0 * iat - jat));
+                    }
+                }
+                fourier_test_w_q[iat][jat][fourier_test_q_points[iq]] = fourier_test_block;
+            }
+        }
+    }
+
+    // Reference: LibRPA FT_Wc_q2R, as previously called by LibBSE.
+    const auto fourier_test_reference = librpa_int::FT_Wc_q2R(
+        fourier_test_dataset.comm_h, fourier_test_dataset.basis_aux,
+        fourier_test_dataset.symmetry_context, fourier_test_w_q, fourier_test_dataset.tfg,
+        fourier_test_dataset.pbc, fourier_test_dataset.pbc.Rlist, true, "", false);
+    const auto fourier_test_candidate = LibRPA_API::transform_screened_q_to_r(
+        fourier_test_dataset, fourier_test_dataset.pbc, fourier_test_w_q);
+
+    std::size_t fourier_test_compared_blocks = 0;
+    for (const auto &[iat, fourier_test_j_blocks] : fourier_test_reference)
+    {
+        for (const auto &[jat, fourier_test_r_blocks] : fourier_test_j_blocks)
+        {
+            for (const auto &[r, fourier_test_reference_block] : fourier_test_r_blocks)
+            {
+                const auto &fourier_test_candidate_block = fourier_test_candidate.at(
+                    static_cast<int>(iat)).at({static_cast<int>(jat), {r.x, r.y, r.z}});
+                for (int i = 0; i < fourier_test_reference_block.nr(); ++i)
+                {
+                    for (int j = 0; j < fourier_test_reference_block.nc(); ++j)
+                    {
+                        if (std::abs(fourier_test_candidate_block(i, j) -
+                                     fourier_test_reference_block(i, j)) > 1.e-14)
+                        {
+                            throw std::runtime_error(
+                                "OpenMP W(q)->W(R) differs from LibRPA FT_Wc_q2R");
+                        }
+                    }
+                }
+                ++fourier_test_compared_blocks;
+            }
+        }
+    }
+    // 4 atom pairs x 6 cells, and no extra blocks in the candidate.
+    std::size_t fourier_test_candidate_blocks = 0;
+    for (const auto &fourier_test_candidate_row : fourier_test_candidate)
+    {
+        fourier_test_candidate_blocks += fourier_test_candidate_row.second.size();
+    }
+    if (fourier_test_compared_blocks != 24 || fourier_test_candidate_blocks != 24)
+    {
+        throw std::runtime_error("W(q)->W(R) block count differs from 4 pairs x 6 cells");
+    }
+}
+
 int main(int argc,char **argv) {
     MPI_Init(&argc,&argv);
     int rank,size; MPI_Comm_rank(MPI_COMM_WORLD,&rank); MPI_Comm_size(MPI_COMM_WORLD,&size);
@@ -111,6 +210,7 @@ int main(int argc,char **argv) {
     const auto root=fs::temp_directory_path()/("libbse_aims_w_"+std::to_string(id));
     try {
         LibRPA_API::initialize();
+        test_screened_fourier_matches_librpa();
         if (rank==0) { fs::create_directories(root); fixture(root); write_binary_w_fixture(root); }
         MPI_Barrier(MPI_COMM_WORLD);
         {

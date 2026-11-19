@@ -200,22 +200,132 @@ libbse::TensorMap<libbse::Complex> transform_screened_q_to_r(
     librpa_int::Dataset &dataset, const librpa_int::PeriodicBoundaryData &pbc,
     const ScreenedQBlocks &wq)
 {
-    // Despite its historical Wc name, this routine is a linear spatial FT and
-    // applies unchanged to full W. Frequency/time transforms are not requested.
-    // Explicit q/-q stars supplied by the reader need no space-group rotation.
-    const auto wr = librpa_int::FT_Wc_q2R(
-        dataset.comm_h, dataset.basis_aux, dataset.symmetry_context, wq,
-        dataset.tfg, pbc, pbc.Rlist, true, "", false);
-    libbse::TensorMap<libbse::Complex> result;
-    auto result_memory = libbse::watch_memory("Coulomb.real_space_output", result);
-    for (const auto &[iat, js] : wr)
-        for (const auto &[jat, rs] : js)
-            for (const auto &[r, matrix] : rs)
-                result[static_cast<int>(iat)][{static_cast<int>(jat), {r.x,r.y,r.z}}]
-                    = RI::Tensor<libbse::Complex>(
-                        {static_cast<std::size_t>(matrix.nr()), static_cast<std::size_t>(matrix.nc())},
-                        matrix.sptr());
-    return result;
+    // W(R) = (1/N_q) * sum_q exp(-2*pi*i*q.R) * W(q), complex, on the coarse
+    // BvK cell. Same convention and term order as LibRPA FT_Wc_q2R without the
+    // symmetry context (inverse-symmetry stars only: a star member q_bz != q
+    // contributes conj(W(q))). Linear spatial FT, so it applies unchanged to
+    // full W. Evaluated here with OpenMP over (atom pair, R), phases computed
+    // once and no complex temporaries: FT_Wc_q2R allocates W(q)*phase (and
+    // conj(W(q))) for every (R, q) term.
+    const auto &screened_r_list = pbc.Rlist;
+    const int screened_r_count = static_cast<int>(screened_r_list.size());
+    const double screened_cell_count = double(pbc.get_n_cells_bvk());
+
+    // One task per stored atom pair, with its list of Brillouin-zone terms.
+    struct ScreenedPairTask
+    {
+        int iat = 0;
+        int jat = 0;
+        std::size_t n_mu = 0;
+        std::size_t n_nu = 0;
+        std::vector<const libbse::Complex *> term_values;
+        std::vector<librpa_int::Vector3_Order<double>> term_q_points;
+        std::vector<int> term_is_stored_q;
+    };
+    std::vector<ScreenedPairTask> screened_pair_tasks;
+    for (const auto &[iat, screened_j_blocks] : wq)
+    {
+        for (const auto &[jat, screened_q_matrices] : screened_j_blocks)
+        {
+            ScreenedPairTask screened_pair_task;
+            screened_pair_task.iat = static_cast<int>(iat);
+            screened_pair_task.jat = static_cast<int>(jat);
+            screened_pair_task.n_mu = dataset.basis_aux[iat];
+            screened_pair_task.n_nu = dataset.basis_aux[jat];
+            for (const auto &[q, screened_q_matrix] : screened_q_matrices)
+            {
+                if (static_cast<std::size_t>(screened_q_matrix.nr()) != screened_pair_task.n_mu ||
+                    static_cast<std::size_t>(screened_q_matrix.nc()) != screened_pair_task.n_nu)
+                {
+                    throw std::runtime_error("W(q) block size differs from the auxiliary basis");
+                }
+                if (!screened_q_matrix.is_row_major())
+                {
+                    throw std::runtime_error("W(q) block must be row major");
+                }
+                // Every Brillouin-zone member of the star of the stored q.
+                for (const auto &q_bz : pbc.map_irk_ks.at(q))
+                {
+                    screened_pair_task.term_values.push_back(screened_q_matrix.ptr());
+                    screened_pair_task.term_q_points.push_back(q_bz);
+                    screened_pair_task.term_is_stored_q.push_back(q_bz == q ? 1 : 0);
+                }
+            }
+            screened_pair_tasks.push_back(std::move(screened_pair_task));
+        }
+    }
+    const int screened_pair_count = static_cast<int>(screened_pair_tasks.size());
+
+    // Output tensors are created serially; the parallel loop only fills them.
+    std::vector<std::vector<RI::Tensor<libbse::Complex>>> screened_r_tensors(
+        static_cast<std::size_t>(screened_pair_count));
+    for (int ipair = 0; ipair < screened_pair_count; ++ipair)
+    {
+        const auto &screened_pair_task = screened_pair_tasks[ipair];
+        screened_r_tensors[ipair].resize(static_cast<std::size_t>(screened_r_count));
+        for (int ir = 0; ir < screened_r_count; ++ir)
+        {
+            screened_r_tensors[ipair][ir] = RI::Tensor<libbse::Complex>(
+                {screened_pair_task.n_mu, screened_pair_task.n_nu});
+        }
+    }
+
+    // One (atom pair, R) element per iteration; all are independent.
+    const long screened_task_count = static_cast<long>(screened_pair_count) * screened_r_count;
+#pragma omp parallel for schedule(dynamic)
+    for (long itask = 0; itask < screened_task_count; ++itask)
+    {
+        const int ipair = static_cast<int>(itask / screened_r_count);
+        const int ir = static_cast<int>(itask % screened_r_count);
+        const auto &screened_pair_task = screened_pair_tasks[ipair];
+        const auto &r = screened_r_list[ir];
+        const std::size_t screened_block_size = screened_pair_task.n_mu * screened_pair_task.n_nu;
+        // Real and imaginary parts of sum_q W(q)*phase, accumulated separately.
+        std::vector<double> screened_r_real(screened_block_size, 0.);
+        std::vector<double> screened_r_imag(screened_block_size, 0.);
+        const int screened_term_count = static_cast<int>(screened_pair_task.term_values.size());
+        for (int iterm = 0; iterm < screened_term_count; ++iterm)
+        {
+            // phase = exp(-2*pi*i*q_bz.R) / N_q = cos + i*sin
+            const double screened_phase_angle =
+                -screened_pair_task.term_q_points[iterm] * (r * pbc.latvec) * librpa_int::TWO_PI;
+            const double screened_phase_cos = std::cos(screened_phase_angle) / screened_cell_count;
+            const double screened_phase_sin = std::sin(screened_phase_angle) / screened_cell_count;
+            // An inverse star member contributes conj(W(q)) = a - i*b.
+            const double screened_imag_sign = screened_pair_task.term_is_stored_q[iterm] ? 1. : -1.;
+            const libbse::Complex *screened_q_values = screened_pair_task.term_values[iterm];
+            for (std::size_t k = 0; k < screened_block_size; ++k)
+            {
+                const double screened_a = screened_q_values[k].real();
+                const double screened_b = screened_imag_sign * screened_q_values[k].imag();
+                // (a + i*b) * (cos + i*sin) = (a*cos - b*sin) + i*(a*sin + b*cos)
+                screened_r_real[k] += screened_a * screened_phase_cos - screened_b * screened_phase_sin;
+                screened_r_imag[k] += screened_a * screened_phase_sin + screened_b * screened_phase_cos;
+            }
+        }
+        // RI::Tensor is row major: element (i, j) at i*n_nu + j, as in W(q).
+        libbse::Complex *screened_r_values = screened_r_tensors[ipair][ir].ptr();
+        for (std::size_t k = 0; k < screened_block_size; ++k)
+        {
+            screened_r_values[k] = libbse::Complex(screened_r_real[k], screened_r_imag[k]);
+        }
+    }
+
+    libbse::TensorMap<libbse::Complex> screened_real_space_output;
+    auto screened_real_space_output_memory =
+        libbse::watch_memory("Coulomb.real_space_output", screened_real_space_output);
+    for (int ipair = 0; ipair < screened_pair_count; ++ipair)
+    {
+        const auto &screened_pair_task = screened_pair_tasks[ipair];
+        for (int ir = 0; ir < screened_r_count; ++ir)
+        {
+            const auto &r = screened_r_list[ir];
+            screened_real_space_output[screened_pair_task.iat]
+                                      [{screened_pair_task.jat, {r.x, r.y, r.z}}] =
+                std::move(screened_r_tensors[ipair][ir]);
+        }
+    }
+    return screened_real_space_output;
 }
 
 librpa_int::ComplexMatrix inverse(const librpa_int::ComplexMatrix &matrix)
