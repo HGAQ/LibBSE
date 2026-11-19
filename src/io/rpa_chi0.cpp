@@ -149,26 +149,16 @@ TensorMap<Complex> read_rpa_symmetry_chi0(const InputParameters &opts, librpa_in
         const auto rpa_q = rpa_q_grid[rpa_grid_index(rpa_mapping.target_q, rpa_q_grid)] * rpa_pbc.G;
         // Bare response is restored before the nonlinear dielectric inverse.
         // The target q determines Coulomb matrices and Gamma head/wing handling.
-        const auto rpa_full_w = screening.screen(rpa_chi0_q, rpa_q, omega);
-        auto rpa_full_w_memory = watch_memory("rpa_full_w", rpa_full_w);
+        auto rpa_owned_w = screening.screen(rpa_chi0_q, rpa_q, omega);
+        auto rpa_owned_w_memory = watch_memory("rpa_owned_w", rpa_owned_w);
         rpa_pbc.map_irk_ks[rpa_q].push_back(rpa_q);
 
-        // Retain only the atom pairs needed by this MPI rank.
-        for (int i : rpa_i_atoms)
+        // Keep the W(q) atom pairs owned by this rank; W(R) is sent to the
+        // LibRI atom lists after the Fourier transform.
+        for (auto &[rpa_owned_pair, rpa_owned_block] : rpa_owned_w)
         {
-            for (int j : rpa_j_atoms)
-            {
-                Matz rpa_w_atom_pair(ds.basis_aux[i], ds.basis_aux[j], librpa_int::MAJOR::ROW);
-                for (std::size_t a = 0; a < rpa_w_atom_pair.nr(); ++a)
-                {
-                    for (std::size_t b = 0; b < rpa_w_atom_pair.nc(); ++b)
-                    {
-                        rpa_w_atom_pair(a, b) = rpa_full_w(ds.basis_aux.get_global_index(i, a),
-                                                           ds.basis_aux.get_global_index(j, b));
-                    }
-                }
-                rpa_w_q_blocks[i][j][rpa_q] = std::move(rpa_w_atom_pair);
-            }
+            rpa_w_q_blocks[rpa_owned_pair.first][rpa_owned_pair.second][rpa_q] =
+                std::move(rpa_owned_block);
         }
     }
     screening.pbc = rpa_pbc;
@@ -178,7 +168,11 @@ TensorMap<Complex> read_rpa_symmetry_chi0(const InputParameters &opts, librpa_in
                   << rpa_representative_indices.size() << " representatives, " << rpa_q_grid.size()
                   << " q points; omega = " << omega << " Ha\n";
     }
-    return LibRPA_API::transform_screened_q_to_r(ds, rpa_pbc, rpa_w_q_blocks);
+    // W(R) on the owner ranks, then to the ranks whose LibRI lists need it.
+    const auto rpa_owned_w_r = LibRPA_API::transform_screened_q_to_r(ds, rpa_pbc, rpa_w_q_blocks);
+    rpa_w_q_blocks.clear();
+    return distribute_screened_real_space(rpa_owned_w_r, rpa_i_atoms, rpa_j_atoms,
+                                          ds.comm_h.comm);
 }
 } // namespace
 
@@ -298,25 +292,15 @@ TensorMap<Complex> read_librpa_chi0(const InputParameters &opts, librpa_int::Dat
                                                    rpa_q_fractional.y * rpa_lattice_cell.y +
                                                    rpa_q_fractional.z * rpa_lattice_cell.z)));
         }
-        const auto rpa_full_w_q = screening->screen(rpa_chi0_q, rpa_q_cartesian, omega);
-        auto rpa_full_w_q_memory = watch_memory("rpa_full_w_q", rpa_full_w_q);
+        auto rpa_owned_w_q = screening->screen(rpa_chi0_q, rpa_q_cartesian, omega);
+        auto rpa_owned_w_q_memory = watch_memory("rpa_owned_w_q", rpa_owned_w_q);
 
-        // Retain only the atom pairs needed by this MPI rank.
-        for (int i : rpa_i_atoms)
+        // Keep the W(q) atom pairs owned by this rank; W(R) is sent to the
+        // LibRI atom lists after the Fourier transform.
+        for (auto &[rpa_owned_pair, rpa_owned_block] : rpa_owned_w_q)
         {
-            for (int j : rpa_j_atoms)
-            {
-                Matz rpa_w_atom_pair(ds.basis_aux[i], ds.basis_aux[j], librpa_int::MAJOR::ROW);
-                for (std::size_t a = 0; a < rpa_w_atom_pair.nr(); ++a)
-                {
-                    for (std::size_t b = 0; b < rpa_w_atom_pair.nc(); ++b)
-                    {
-                        rpa_w_atom_pair(a, b) = rpa_full_w_q(ds.basis_aux.get_global_index(i, a),
-                                                             ds.basis_aux.get_global_index(j, b));
-                    }
-                }
-                rpa_w_q_blocks[i][j][rpa_q_cartesian] = std::move(rpa_w_atom_pair);
-            }
+            rpa_w_q_blocks[rpa_owned_pair.first][rpa_owned_pair.second][rpa_q_cartesian] =
+                std::move(rpa_owned_block);
         }
     }
     if (ds.comm_h.myid == 0)
@@ -325,6 +309,10 @@ TensorMap<Complex> read_librpa_chi0(const InputParameters &opts, librpa_int::Dat
                   << " Ha; LibRPA dielectric screening\n";
     }
     screening->pbc = pbc;
-    return LibRPA_API::transform_screened_q_to_r(ds, pbc, rpa_w_q_blocks);
+    // W(R) on the owner ranks, then to the ranks whose LibRI lists need it.
+    const auto rpa_owned_w_r = LibRPA_API::transform_screened_q_to_r(ds, pbc, rpa_w_q_blocks);
+    rpa_w_q_blocks.clear();
+    return distribute_screened_real_space(rpa_owned_w_r, rpa_i_atoms, rpa_j_atoms,
+                                          ds.comm_h.comm);
 }
 } // namespace libbse

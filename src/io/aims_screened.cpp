@@ -549,19 +549,23 @@ TensorMap<Complex> read_aims_screened_interaction(const InputParameters &options
                         watch_memory("aims_screened_chi0_temp", aims_screened_chi0_temp);
                     std::copy(aims_target_operator->begin(), aims_target_operator->end(),
                               aims_screened_chi0_temp.ptr());
-                    librpa_int::Matz aims_screened_full_w_temp;
-                    auto aims_screened_full_w_temp_memory =
-                        watch_memory("aims_screened_full_w_temp", aims_screened_full_w_temp);
                     // Record the screening call separately from file reading and copies.
                     const double aims_screened_chi0_to_w_start_time = MPI_Wtime();
-                    aims_screened_full_w_temp =
+                    auto aims_screened_owned_w_temp =
                         screening->screen(aims_screened_chi0_temp, q, selected_omega);
+                    auto aims_screened_owned_w_temp_memory =
+                        watch_memory("aims_screened_owned_w_temp", aims_screened_owned_w_temp);
                     aims_screened_chi0_to_w_total_seconds +=
                         MPI_Wtime() - aims_screened_chi0_to_w_start_time;
                     ++aims_screened_chi0_q_count;
-                    aims_reconstructed_operator.assign(aims_screened_full_w_temp.ptr(),
-                                                       aims_screened_full_w_temp.ptr() + naux * naux);
-                    aims_target_operator = &aims_reconstructed_operator;
+                    // Keep the W(q) atom pairs owned by this rank; W(R) is sent to
+                    // the LibRI atom lists after the Fourier transform below.
+                    for (auto &[aims_owned_pair, aims_owned_block] : aims_screened_owned_w_temp)
+                    {
+                        aims_screened_q_blocks[aims_owned_pair.first][aims_owned_pair.second][q] =
+                            std::move(aims_owned_block);
+                    }
+                    continue;
                 }
                 for (int iat : local_i_atoms)
                 {
@@ -630,10 +634,17 @@ TensorMap<Complex> read_aims_screened_interaction(const InputParameters &options
     screening->pbc = pbc;
     const double aims_screened_fourier_start_time = MPI_Wtime();
     auto aims_screened_real_space = LibRPA_API::transform_screened_q_to_r(dataset, pbc, aims_screened_q_blocks);
+    aims_screened_q_blocks.clear();
     if (dataset.comm_h.myid == 0)
     {
         std::cout << "  | Time of W(q) -> W(R) Fourier transform on rank 0: "
                   << MPI_Wtime() - aims_screened_fourier_start_time << " s" << std::endl;
+    }
+    if (quantity == "chi0")
+    {
+        // chi0 screening returns owner-distributed W; send W(R) to the LibRI lists.
+        return distribute_screened_real_space(aims_screened_real_space, local_i_atoms,
+                                              local_j_atoms, dataset.comm_h.comm);
     }
     return aims_screened_real_space;
 }

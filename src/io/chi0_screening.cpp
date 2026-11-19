@@ -3,7 +3,11 @@
 #include "bse/elpa_solver.h"
 #include <../src/api/dataset_helper.h>
 #include <../src/math/utils_matrix_m_mpi.h>
+#include <RI/comm/mix/Communicate_Tensors_Map_Judge.h>
 #include <algorithm>
+#include <array>
+#include <climits>
+#include <set>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -538,6 +542,276 @@ Matz collect_cut_coulomb(librpa_int::Dataset &ds, const librpa_int::Vector3_Orde
     return collect_coulomb(ds, q, true);
 }
 
+// Find the stored Coulomb block that represents V(q) for one atom pair: either
+// stored at q itself, or at a q_r whose time-reversal star contains q, in which
+// case V(q) = conj(V(q_r)) element-wise (real auxiliary functions).
+static const librpa_int::ComplexMatrix *
+find_coulomb_q_block(const librpa_int::Dataset &ds,
+                     const std::map<librpa_int::Vector3_Order<double>,
+                                    std::shared_ptr<librpa_int::ComplexMatrix>> &coulomb_q_blocks,
+                     const librpa_int::Vector3_Order<double> &q, bool &coulomb_conjugate)
+{
+    coulomb_conjugate = false;
+    for (const auto &[coulomb_stored_q, coulomb_stored_block] : coulomb_q_blocks)
+    {
+        if (same_screening_q(q, coulomb_stored_q))
+        {
+            return coulomb_stored_block.get();
+        }
+        const auto coulomb_star = ds.pbc.map_irk_ks.find(coulomb_stored_q);
+        if (coulomb_star == ds.pbc.map_irk_ks.end())
+        {
+            continue;
+        }
+        for (const auto &coulomb_star_member : coulomb_star->second)
+        {
+            if (!same_screening_q(q, coulomb_star_member))
+            {
+                continue;
+            }
+            // Only q = -q_r (mod G) is restored; other star members need a basis rotation.
+            const auto coulomb_sum_fractional =
+                (q + coulomb_stored_q) * ds.pbc.latvec.Transpose();
+            if (std::abs(coulomb_sum_fractional.x - std::round(coulomb_sum_fractional.x)) +
+                    std::abs(coulomb_sum_fractional.y - std::round(coulomb_sum_fractional.y)) +
+                    std::abs(coulomb_sum_fractional.z - std::round(coulomb_sum_fractional.z)) >
+                1.e-8)
+            {
+                throw std::runtime_error("chi0 screening cannot restore general Coulomb q stars "
+                                         "without basis rotations");
+            }
+            coulomb_conjugate = true;
+            return coulomb_stored_block.get();
+        }
+    }
+    return nullptr;
+}
+
+// Distributed replacement of hermitian(collect_coulomb(...)) followed by
+// scatter_screening_operator: V(q) goes directly from the atom-pair storage
+// into the block-cyclic local array of coulomb_descriptor, without a dense
+// N_mu x N_mu copy on any rank. Same pattern as the LibRPA GW Coulomb setup:
+// LibRI comm_map2_first + LibRPA collect_block_from_ALL_IJ_Tensor_sparse_zero_missing.
+//  1. One owner per upper-triangle atom pair (I <= J): the lowest rank that
+//     stores V_IJ or V_JI at q. Replicated Coulomb storage is therefore never
+//     added twice by the LibRI communication, and missing pairs are detected.
+//  2. The owner forms the upper block: V_IJ for I < J, V_JI^H for I > J (the
+//     average if both are stored on the owner), (V_II + V_II^H)/2 for I == J.
+//  3. Every rank receives the upper pairs its 2D block needs and fills the
+//     lower triangle by Hermitian conjugation.
+static Matz collect_coulomb_local(librpa_int::Dataset &ds,
+                                  const librpa_int::Vector3_Order<double> &q,
+                                  bool use_cut_coulomb,
+                                  const librpa_int::ArrayDesc &coulomb_descriptor)
+{
+    const auto &coulomb_basis = ds.basis_aux;
+    const int coulomb_atom_count = static_cast<int>(coulomb_basis.n_atoms);
+    const int coulomb_my_rank = ds.comm_h.myid;
+    // Single-q map: the cell key only labels the current q.
+    const std::array<double, 3> coulomb_cell_key = {0., 0., 0.};
+    using CoulombTensorMap =
+        std::map<int, std::map<std::pair<int, std::array<double, 3>>, RI::Tensor<Complex>>>;
+    const auto &coulomb_storage = use_cut_coulomb ? ds.vq_cut : ds.vq;
+
+    // Step 1: owner of each upper pair = lowest rank holding either order at q.
+    std::vector<int> coulomb_pair_owner(
+        static_cast<std::size_t>(coulomb_atom_count) * coulomb_atom_count, INT_MAX);
+    for (const auto &[coulomb_row_atom, coulomb_col_blocks] : coulomb_storage)
+    {
+        for (const auto &[coulomb_col_atom, coulomb_q_blocks] : coulomb_col_blocks)
+        {
+            bool coulomb_conjugate = false;
+            if (find_coulomb_q_block(ds, coulomb_q_blocks, q, coulomb_conjugate) == nullptr)
+            {
+                continue;
+            }
+            const int coulomb_upper_i =
+                static_cast<int>(std::min(coulomb_row_atom, coulomb_col_atom));
+            const int coulomb_upper_j =
+                static_cast<int>(std::max(coulomb_row_atom, coulomb_col_atom));
+            coulomb_pair_owner[static_cast<std::size_t>(coulomb_upper_i) * coulomb_atom_count +
+                               coulomb_upper_j] = coulomb_my_rank;
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, coulomb_pair_owner.data(),
+                  static_cast<int>(coulomb_pair_owner.size()), MPI_INT, MPI_MIN, ds.comm_h.comm);
+    for (int coulomb_upper_i = 0; coulomb_upper_i < coulomb_atom_count; ++coulomb_upper_i)
+    {
+        for (int coulomb_upper_j = coulomb_upper_i; coulomb_upper_j < coulomb_atom_count;
+             ++coulomb_upper_j)
+        {
+            if (coulomb_pair_owner[static_cast<std::size_t>(coulomb_upper_i) * coulomb_atom_count +
+                                   coulomb_upper_j] == INT_MAX)
+            {
+                throw std::runtime_error("missing cut Coulomb block for chi0 screening "
+                                         "(requires full/inverse q coverage)");
+            }
+        }
+    }
+
+    // Step 2: the owner forms each upper block from its local storage.
+    CoulombTensorMap coulomb_upper_owned;
+    double coulomb_hermitian_error_local = 0.;
+    for (const auto &[coulomb_row_atom, coulomb_col_blocks] : coulomb_storage)
+    {
+        for (const auto &[coulomb_col_atom, coulomb_q_blocks] : coulomb_col_blocks)
+        {
+            bool coulomb_conjugate = false;
+            const auto *coulomb_stored_block =
+                find_coulomb_q_block(ds, coulomb_q_blocks, q, coulomb_conjugate);
+            if (coulomb_stored_block == nullptr)
+            {
+                continue;
+            }
+            const int coulomb_i = static_cast<int>(coulomb_row_atom);
+            const int coulomb_j = static_cast<int>(coulomb_col_atom);
+            const int coulomb_upper_i = std::min(coulomb_i, coulomb_j);
+            const int coulomb_upper_j = std::max(coulomb_i, coulomb_j);
+            if (coulomb_pair_owner[static_cast<std::size_t>(coulomb_upper_i) * coulomb_atom_count +
+                                   coulomb_upper_j] != coulomb_my_rank)
+            {
+                continue;
+            }
+            const std::size_t coulomb_n_upper_i = coulomb_basis[coulomb_upper_i];
+            const std::size_t coulomb_n_upper_j = coulomb_basis[coulomb_upper_j];
+            if (static_cast<std::size_t>(coulomb_stored_block->nr) != coulomb_basis[coulomb_i] ||
+                static_cast<std::size_t>(coulomb_stored_block->nc) != coulomb_basis[coulomb_j])
+            {
+                throw std::runtime_error("Coulomb block size differs from the auxiliary basis");
+            }
+            RI::Tensor<Complex> coulomb_upper_block({coulomb_n_upper_i, coulomb_n_upper_j});
+            for (std::size_t a = 0; a < static_cast<std::size_t>(coulomb_stored_block->nr); ++a)
+            {
+                for (std::size_t b = 0; b < static_cast<std::size_t>(coulomb_stored_block->nc); ++b)
+                {
+                    // V(q) element of the stored block, conjugated for a -q star member.
+                    Complex coulomb_value = (*coulomb_stored_block)(a, b);
+                    if (coulomb_conjugate)
+                    {
+                        coulomb_value = std::conj(coulomb_value);
+                    }
+                    if (coulomb_i < coulomb_j)
+                    {
+                        coulomb_upper_block(a, b) = coulomb_value;
+                    }
+                    else if (coulomb_i > coulomb_j)
+                    {
+                        // Lower block: V_JI(b, a) = conj(V_IJ(a, b)).
+                        coulomb_upper_block(b, a) = std::conj(coulomb_value);
+                    }
+                    else
+                    {
+                        // Diagonal atom block: Hermitian average, as hermitian() did:
+                        // V(a, b) <- [V(a, b) + conj(V(b, a))] / 2.
+                        Complex coulomb_mirror_value = (*coulomb_stored_block)(b, a);
+                        if (coulomb_conjugate)
+                        {
+                            coulomb_mirror_value = std::conj(coulomb_mirror_value);
+                        }
+                        coulomb_hermitian_error_local +=
+                            std::norm(coulomb_value - std::conj(coulomb_mirror_value));
+                        coulomb_upper_block(a, b) =
+                            0.5 * (coulomb_value + std::conj(coulomb_mirror_value));
+                    }
+                }
+            }
+            auto &coulomb_upper_row = coulomb_upper_owned[coulomb_upper_i];
+            const auto coulomb_upper_key = std::make_pair(coulomb_upper_j, coulomb_cell_key);
+            const auto coulomb_existing = coulomb_upper_row.find(coulomb_upper_key);
+            if (coulomb_existing == coulomb_upper_row.end())
+            {
+                coulomb_upper_row.emplace(coulomb_upper_key, std::move(coulomb_upper_block));
+            }
+            else
+            {
+                // Both V_IJ and V_JI^H are stored on the owner: use their average.
+                auto &coulomb_existing_block = coulomb_existing->second;
+                for (std::size_t a = 0; a < coulomb_n_upper_i; ++a)
+                {
+                    for (std::size_t b = 0; b < coulomb_n_upper_j; ++b)
+                    {
+                        coulomb_existing_block(a, b) =
+                            0.5 * (coulomb_existing_block(a, b) + coulomb_upper_block(a, b));
+                    }
+                }
+            }
+        }
+    }
+
+    // Norm of the full matrix: off-diagonal atom blocks appear twice (V_IJ, V_JI).
+    double coulomb_norm_local = 0.;
+    for (const auto &[coulomb_upper_i, coulomb_upper_row] : coulomb_upper_owned)
+    {
+        for (const auto &[coulomb_upper_key, coulomb_upper_block] : coulomb_upper_row)
+        {
+            const double coulomb_block_weight =
+                coulomb_upper_key.first == coulomb_upper_i ? 1. : 2.;
+            const std::size_t coulomb_block_size = coulomb_upper_block.shape.get_shape_all();
+            const Complex *coulomb_block_values = coulomb_upper_block.ptr();
+            for (std::size_t k = 0; k < coulomb_block_size; ++k)
+            {
+                coulomb_norm_local += coulomb_block_weight * std::norm(coulomb_block_values[k]);
+            }
+        }
+    }
+    // Same criterion as hermitian(): ||V - V^H|| <= 1e-7 max(1, ||V||). As before,
+    // only diagonal atom blocks can violate it; off-diagonal blocks are mirrored.
+    double coulomb_check_local[2] = {coulomb_hermitian_error_local, coulomb_norm_local};
+    double coulomb_check_global[2] = {0., 0.};
+    MPI_Allreduce(coulomb_check_local, coulomb_check_global, 2, MPI_DOUBLE, MPI_SUM,
+                  ds.comm_h.comm);
+    if (!std::isfinite(coulomb_check_global[1]) ||
+        std::sqrt(coulomb_check_global[0]) >
+            1.e-7 * std::max(1., std::sqrt(coulomb_check_global[1])))
+    {
+        throw std::runtime_error("chi0/V is not Hermitian in the supplied auxiliary basis");
+    }
+
+    // Step 3: receive the upper pairs needed by this rank's 2D block (LibRI).
+    const auto coulomb_needed_pairs =
+        librpa_int::get_necessary_IJ_from_block_2D_sy('U', coulomb_basis, coulomb_descriptor);
+    std::set<int> coulomb_needed_rows;
+    std::set<int> coulomb_needed_cols;
+    for (const auto &coulomb_needed_pair : coulomb_needed_pairs)
+    {
+        coulomb_needed_rows.insert(coulomb_needed_pair.first);
+        coulomb_needed_cols.insert(coulomb_needed_pair.second);
+    }
+    const auto coulomb_received = RI::Communicate_Tensors_Map_Judge::comm_map2_first(
+        ds.comm_h.comm, coulomb_upper_owned, coulomb_needed_rows, coulomb_needed_cols);
+    coulomb_upper_owned.clear();
+    for (const auto &coulomb_needed_pair : coulomb_needed_pairs)
+    {
+        const auto coulomb_received_row = coulomb_received.find(coulomb_needed_pair.first);
+        if (coulomb_received_row == coulomb_received.end() ||
+            coulomb_received_row->second.count(
+                std::make_pair(coulomb_needed_pair.second, coulomb_cell_key)) == 0)
+        {
+            throw std::runtime_error("Coulomb block missing after distribution for chi0 screening");
+        }
+    }
+
+    // Fill the block-cyclic local array: V_IJ for I <= J, V_JI^H for I > J.
+    auto coulomb_local =
+        librpa_int::init_local_mat<Complex>(coulomb_descriptor, librpa_int::MAJOR::COL);
+    librpa_int::collect_block_from_ALL_IJ_Tensor_sparse_zero_missing(
+        coulomb_local, coulomb_descriptor, coulomb_basis, coulomb_cell_key, true,
+        Complex(1., 0.), coulomb_received, librpa_int::MAJOR::ROW);
+    return coulomb_local;
+}
+
+TensorMap<Complex> distribute_screened_real_space(const TensorMap<Complex> &screened_owned_r,
+                                                  const std::vector<int> &screened_rows,
+                                                  const std::vector<int> &screened_cols,
+                                                  MPI_Comm screened_communicator)
+{
+    const std::set<int> screened_row_set(screened_rows.begin(), screened_rows.end());
+    const std::set<int> screened_col_set(screened_cols.begin(), screened_cols.end());
+    // Rank r receives every (I, (J, R)) with I in its rows and J in its cols.
+    return RI::Communicate_Tensors_Map_Judge::comm_map2_first(
+        screened_communicator, screened_owned_r, screened_row_set, screened_col_set);
+}
+
 Matz effective_inverse_dielectric(const Matz &screening_inverse, double plasma, double binding)
 {
     if (!std::isfinite(plasma) || plasma <= 0 || !std::isfinite(binding) || binding < 0)
@@ -606,8 +880,12 @@ Chi0Screening::Chi0Screening(const InputParameters &options, librpa_int::Dataset
     memory_ = std::make_unique<MemoryWatch>(ChannelMemoryObserver{*this});
 }
 
-Matz Chi0Screening::screen(const Matz &screening_chi0, const librpa_int::Vector3_Order<double> &q,
-                           double omega)
+// Defined here, where librpa_int::IndexScheduler is a complete type.
+Chi0Screening::~Chi0Screening() = default;
+
+ScreenedOwnedBlocks Chi0Screening::screen(const Matz &screening_chi0,
+                                          const librpa_int::Vector3_Order<double> &q,
+                                          double omega)
 {
     using namespace librpa_int;
     auto &ds = dataset_;
@@ -646,23 +924,15 @@ Matz Chi0Screening::screen(const Matz &screening_chi0, const librpa_int::Vector3
     const bool screening_full_metric = options_.chi0_coulomb_metric == "full";
 
     // Read both Coulomb metrics: full V builds epsilon, cut V regularizes W.
-    // Each dense Coulomb matrix is released as soon as its BLACS copy exists.
-    Matz screening_sqrt_cut_local;
-    {
-        auto screening_cut_coulomb = hermitian(collect_coulomb(ds, q, true));
-        auto screening_cut_coulomb_memory =
-            watch_memory("screening_cut_coulomb", screening_cut_coulomb);
-        screening_sqrt_cut_local = scatter_screening_operator(screening_cut_coulomb, desc);
-    }
+    // Atom-pair blocks go directly into the block-cyclic local arrays; no rank
+    // holds a dense N_mu x N_mu Coulomb matrix.
+    Matz screening_sqrt_cut_local = collect_coulomb_local(ds, q, true, desc);
     auto screening_sqrt_cut_local_memory =
         watch_memory("screening_sqrt_cut_local", screening_sqrt_cut_local);
     Matz screening_sqrt_full_local;
     if (screening_full_metric)
     {
-        auto screening_full_coulomb = hermitian(collect_coulomb(ds, q, false));
-        auto screening_full_coulomb_memory =
-            watch_memory("screening_full_coulomb", screening_full_coulomb);
-        screening_sqrt_full_local = scatter_screening_operator(screening_full_coulomb, desc);
+        screening_sqrt_full_local = collect_coulomb_local(ds, q, false, desc);
     }
     const double screening_coulomb_end_time = MPI_Wtime();
 
@@ -769,12 +1039,49 @@ Matz Chi0Screening::screen(const Matz &screening_chi0, const librpa_int::Vector3
     screening_workspace.clear();
     const double screening_w_end_time = MPI_Wtime();
 
-    // Every rank extracts its own atom pairs from W, so W is the only operator
-    // that is always replicated. sqrt(V_cut) and epsilon^-1 are replicated only
-    // for the audit files or the later binding-energy correction.
-    auto screening_w = gather_screening_operator(screening_w_local, desc, n, ds.comm_h.comm);
-    auto screening_w_memory = watch_memory("screening_w", screening_w);
+    // W goes from the block-cyclic layout to unique atom-pair owners, as in the
+    // LibRPA GW Wc export: redistribute to one block per process (pgemr2d), then
+    // the LibRPA IndexScheduler assembles each atom pair (I, J) on exactly one
+    // rank. No rank holds a dense N_mu x N_mu W. The callers transform the owned
+    // blocks to W(R) and send them to the LibRI atom lists
+    // (distribute_screened_real_space). sqrt(V_cut) and epsilon^-1 are still
+    // replicated, but only for the audit files or the binding-energy correction.
+    if (!screening_owner_scheduler_)
+    {
+        screening_owner_descriptor_ = std::make_unique<ArrayDesc>(ds.blacs_h);
+        screening_owner_descriptor_->init_1b1p(n, n, 0, 0);
+        const auto screening_owner_pairs = get_balanced_ap_distribution_for_consec_descriptor(
+            ds.basis_aux, ds.basis_aux, *screening_owner_descriptor_);
+        screening_owner_scheduler_ = std::make_unique<IndexScheduler>();
+        screening_owner_scheduler_->init(screening_owner_pairs, ds.basis_aux, ds.basis_aux,
+                                         *screening_owner_descriptor_, false);
+    }
+    auto screening_w_consecutive_local =
+        init_local_mat<Complex>(*screening_owner_descriptor_, MAJOR::COL);
+    auto screening_w_consecutive_local_memory =
+        watch_memory("screening_w_consecutive_local", screening_w_consecutive_local);
+    // Block-cyclic (64x64 blocks) -> one block per process.
+    ScalapackConnector::pgemr2d_f(n, n, screening_w_local.ptr(), 1, 1, desc.desc,
+                                  screening_w_consecutive_local.ptr(), 1, 1,
+                                  screening_owner_descriptor_->desc, desc.ictxt());
     screening_w_local.clear();
+    ap_p_map<Matz> screening_w_owned_pairs;
+    fill_ap_map_from_blacs_dist_scheduler(screening_w_owned_pairs, screening_w_consecutive_local,
+                                          *screening_owner_scheduler_, ds.basis_aux,
+                                          ds.basis_aux, *screening_owner_descriptor_);
+    screening_w_consecutive_local.clear();
+    ScreenedOwnedBlocks screening_w_owned;
+    auto screening_w_owned_memory = watch_memory("screening_w_owned", screening_w_owned);
+    for (auto &screening_owned_entry : screening_w_owned_pairs)
+    {
+        // The W(q) -> W(R) transform expects row-major atom-pair blocks.
+        screening_owned_entry.second.swap_to_row_major();
+        screening_w_owned.emplace(
+            std::make_pair(static_cast<int>(screening_owned_entry.first.first),
+                           static_cast<int>(screening_owned_entry.first.second)),
+            std::move(screening_owned_entry.second));
+    }
+    screening_w_owned_pairs.clear();
     const bool screening_keeps_channels = options_.bse_plasma_energy_ev > 0;
     if (options_.out_screening_matrices || screening_keeps_channels)
     {
@@ -831,13 +1138,13 @@ Matz Chi0Screening::screen(const Matz &screening_chi0, const librpa_int::Vector3
                   << ", sqrt(V) " << screening_sqrt_end_time - screening_coulomb_end_time
                   << ", epsilon " << screening_epsilon_end_time - screening_sqrt_end_time
                   << ", epsilon^-1 " << screening_inverse_end_time - screening_epsilon_end_time
-                  << ", W " << screening_w_end_time - screening_inverse_end_time << ", gather "
+                  << ", W " << screening_w_end_time - screening_inverse_end_time << ", distribute "
                   << screening_end_time - screening_w_end_time << ", total "
                   << screening_end_time - screening_start_time
                   << "; node available memory " << screening_node_available_memory_gib()
                   << " GiB" << std::endl;
     }
-    return screening_w;
+    return screening_w_owned;
 }
 
 TensorMap<Complex> Chi0Screening::effective(double binding_ev, const std::vector<int> &rows,
