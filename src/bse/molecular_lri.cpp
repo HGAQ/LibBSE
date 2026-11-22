@@ -5,16 +5,24 @@
 #include "uniform_qmesh.h"
 
 #include <RI/global/Array_Operator.h>
+#include <RI/global/Blas_Interface.h>
+#include <RI/ri/LRI_Cal_Aux.h>
+#include <RI/distribute/Divide_Atoms.h>
+
+#include <malloc.h>
 
 #include <mpi.h>
 
 #include <algorithm>
+#include <cmath>
+#include <iomanip>
 #include <cstddef>
 #include <filesystem>
 #include <limits>
 #include <iostream>
 #include <numeric>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
@@ -365,26 +373,21 @@ void transform_k_2dlocal(
     int mpi_size = 1;
     MPI_Comm_rank(descriptor.comm(), &rank);
     MPI_Comm_size(descriptor.comm(), &mpi_size);
+    // Only the two value buffers are memory-tracked here: every watch
+    // attach/detach snapshots all tracked LibRI tensors, and this function
+    // runs once per streaming batch. The per-rank count/offset vectors are tiny.
     const double factor = coefficient * PARAM.constants.ha_to_ry
                           / static_cast<double>(nk);
     if (k1_batch_size <= 0) throw std::invalid_argument("invalid k batch size");
     const MPI_Datatype block_head_type = block_head_mpi_type();
     std::vector<int> send_head_counts(static_cast<std::size_t>(mpi_size));
-    auto send_head_counts_memory = libbse::watch_memory("molecular_lri.send_head_counts", send_head_counts);
     std::vector<int> receive_head_counts(static_cast<std::size_t>(mpi_size));
-    auto receive_head_counts_memory = libbse::watch_memory("molecular_lri.receive_head_counts", receive_head_counts);
     std::vector<int> send_value_counts(static_cast<std::size_t>(mpi_size));
-    auto send_value_counts_memory = libbse::watch_memory("molecular_lri.send_value_counts", send_value_counts);
     std::vector<int> receive_value_counts(static_cast<std::size_t>(mpi_size));
-    auto receive_value_counts_memory = libbse::watch_memory("molecular_lri.receive_value_counts", receive_value_counts);
     std::vector<int> send_head_offsets(static_cast<std::size_t>(mpi_size));
-    auto send_head_offsets_memory = libbse::watch_memory("molecular_lri.send_head_offsets", send_head_offsets);
     std::vector<int> receive_head_offsets(static_cast<std::size_t>(mpi_size));
-    auto receive_head_offsets_memory = libbse::watch_memory("molecular_lri.receive_head_offsets", receive_head_offsets);
     std::vector<int> send_value_offsets(static_cast<std::size_t>(mpi_size));
-    auto send_value_offsets_memory = libbse::watch_memory("molecular_lri.send_value_offsets", send_value_offsets);
     std::vector<int> receive_value_offsets(static_cast<std::size_t>(mpi_size));
-    auto receive_value_offsets_memory = libbse::watch_memory("molecular_lri.receive_value_offsets", receive_value_offsets);
 
     const auto owner = [&](int global_row, int global_column)
     {
@@ -478,21 +481,17 @@ void transform_k_2dlocal(
         }
         std::vector<BlockHead> send_heads(
             static_cast<std::size_t>(send_head_total));
-        auto send_heads_memory = libbse::watch_memory("molecular_lri.send_heads", send_heads);
-        std::vector<BlockHead> receive_heads(
+            std::vector<BlockHead> receive_heads(
             static_cast<std::size_t>(receive_head_total));
-        auto receive_heads_memory = libbse::watch_memory("molecular_lri.receive_heads", receive_heads);
-        std::vector<Complex> send_values(
+            std::vector<Complex> send_values(
             static_cast<std::size_t>(send_value_total));
         auto send_values_memory = libbse::watch_memory("molecular_lri.send_values", send_values);
         std::vector<Complex> receive_values(
             static_cast<std::size_t>(receive_value_total));
         auto receive_values_memory = libbse::watch_memory("molecular_lri.receive_values", receive_values);
         std::vector<int> head_cursor = send_head_offsets;
-        auto head_cursor_memory = libbse::watch_memory("molecular_lri.head_cursor", head_cursor);
-        std::vector<int> value_cursor = send_value_offsets;
-        auto value_cursor_memory = libbse::watch_memory("molecular_lri.value_cursor", value_cursor);
-
+            std::vector<int> value_cursor = send_value_offsets;
+    
         for (const auto &[k1, k2_blocks] : blocks)
         {
             if (k1 < k1_start || k1 >= k1_end) continue;
@@ -597,73 +596,625 @@ void transform_k_2dlocal(
     }
 }
 
+namespace
+{
+
+// Rank-local stacking of the auxiliary functions of one atom list.
+// Auxiliary function P of atom auxiliary_layout.atoms[i] is dense row
+// auxiliary_layout.offsets[i] + P.
+struct AuxiliaryLayout
+{
+    std::vector<int> atoms;
+    std::vector<std::size_t> offsets;
+    std::vector<std::size_t> sizes;
+    std::size_t total = 0;
+};
+
+AuxiliaryLayout build_auxiliary_layout(
+    const std::vector<int> &layout_atoms,
+    const std::map<int, std::map<int, RI::Tensor<Complex>>> &layout_csk_ao_mo,
+    const std::vector<int> &layout_k_indices)
+{
+    AuxiliaryLayout auxiliary_layout;
+    auxiliary_layout.atoms = layout_atoms;
+    if (layout_atoms.empty() || layout_k_indices.empty())
+    {
+        auxiliary_layout.atoms.clear();
+        return auxiliary_layout;
+    }
+    const auto &layout_reference_k = layout_csk_ao_mo.at(layout_k_indices.front());
+    for (const int layout_atom : layout_atoms)
+    {
+        // C^mu(P, s, m)[k]: shape[0] is the number of auxiliary functions of atom mu.
+        const std::size_t layout_atom_auxiliary_count =
+            layout_reference_k.at(layout_atom).shape[0];
+        auxiliary_layout.offsets.push_back(auxiliary_layout.total);
+        auxiliary_layout.sizes.push_back(layout_atom_auxiliary_count);
+        auxiliary_layout.total += layout_atom_auxiliary_count;
+    }
+    return auxiliary_layout;
+}
+
+std::size_t mo_type_count(const std::string &mo_type,
+                          std::size_t nocc, std::size_t nvirt)
+{
+    if (mo_type == "O") return nocc;
+    if (mo_type == "V") return nvirt;
+    throw std::invalid_argument("unknown MO type " + mo_type);
+}
+
+int checked_blas_dimension(std::size_t blas_dimension)
+{
+    if (blas_dimension > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        throw std::overflow_error("BLAS dimension exceeds the int range");
+    return static_cast<int>(blas_dimension);
+}
+
+// interaction_dense_q[P][Q] = sum_R exp(i 2 pi q.R) X_{mu P, nu Q}(R), X = V or W.
+// Rows P run over row_layout (list_I), columns Q over column_layout (list_J).
+// The phase convention and the optional W(q) correction are those of LibRI
+// LRI_k::cal_cvc_mo_k_onthefly; the correction is applied after the Fourier
+// sum and before the contraction, also when the Fourier sum is empty.
+void build_dense_interaction_q(
+    const RI::LRI_k<int, int, 3, Complex> &interaction_lrik,
+    const std::string &interaction_save_name,
+    const KPoint &interaction_q,
+    const bool interaction_apply_correction,
+    const AuxiliaryLayout &interaction_row_layout,
+    const AuxiliaryLayout &interaction_column_layout,
+    std::vector<Complex> &interaction_dense_q)
+{
+    using InteractionAtomCell = std::pair<int, std::array<int, 3>>;
+    const auto &interaction_real_space =
+        interaction_lrik.data_pool.at(interaction_save_name).Ds_ab;
+    const std::size_t interaction_dense_columns = interaction_column_layout.total;
+    interaction_dense_q.assign(
+        interaction_row_layout.total * interaction_dense_columns, Complex(0.0, 0.0));
+    const std::size_t interaction_column_atom_count = interaction_column_layout.atoms.size();
+    const long long interaction_atom_pair_count =
+        static_cast<long long>(interaction_row_layout.atoms.size())
+        * static_cast<long long>(interaction_column_atom_count);
+    int interaction_shape_error = 0;
+
+#pragma omp parallel for schedule(dynamic)
+    for (long long interaction_atom_pair = 0;
+         interaction_atom_pair < interaction_atom_pair_count;
+         ++interaction_atom_pair)
+    {
+        const std::size_t interaction_row_index =
+            static_cast<std::size_t>(interaction_atom_pair) / interaction_column_atom_count;
+        const std::size_t interaction_column_index =
+            static_cast<std::size_t>(interaction_atom_pair) % interaction_column_atom_count;
+        const int interaction_row_atom = interaction_row_layout.atoms[interaction_row_index];
+        const int interaction_column_atom =
+            interaction_column_layout.atoms[interaction_column_index];
+
+        RI::Tensor<Complex> interaction_pair_q;
+        const auto interaction_row_entry = interaction_real_space.find(interaction_row_atom);
+        if (interaction_row_entry != interaction_real_space.end())
+        {
+            const std::vector<InteractionAtomCell> interaction_column_cells =
+                RI::Divide_Atoms::traversal_atom_period(
+                    std::vector<int>{interaction_column_atom}, interaction_lrik.period);
+            for (const InteractionAtomCell &interaction_column_cell : interaction_column_cells)
+            {
+                const auto interaction_cell_entry =
+                    interaction_row_entry->second.find(interaction_column_cell);
+                if (interaction_cell_entry == interaction_row_entry->second.end()
+                    || interaction_cell_entry->second.empty())
+                    continue;
+                const std::array<int, 3> &interaction_cell = interaction_column_cell.second;
+                // X_{mu nu}(q) += exp(i 2 pi q.R) X_{mu nu}(R)
+                const double interaction_phase_argument =
+                    2.0 * M_PI
+                    * (interaction_q[0] * interaction_cell[0]
+                       + interaction_q[1] * interaction_cell[1]
+                       + interaction_q[2] * interaction_cell[2]);
+                const Complex interaction_phase(std::cos(interaction_phase_argument),
+                                                std::sin(interaction_phase_argument));
+                RI::LRI_Cal_Aux::add_Ds(interaction_cell_entry->second,
+                                        interaction_pair_q, interaction_phase);
+            }
+        }
+        if (interaction_apply_correction && interaction_lrik.screened_q_correction)
+            interaction_lrik.screened_q_correction(interaction_row_atom, interaction_column_atom,
+                                                   interaction_q, interaction_pair_q);
+        if (interaction_pair_q.empty()) continue;
+
+        const std::size_t interaction_block_rows =
+            interaction_row_layout.sizes[interaction_row_index];
+        const std::size_t interaction_block_columns =
+            interaction_column_layout.sizes[interaction_column_index];
+        if (interaction_pair_q.shape.size() != 2
+            || interaction_pair_q.shape[0] != interaction_block_rows
+            || interaction_pair_q.shape[1] != interaction_block_columns)
+        {
+#pragma omp atomic write
+            interaction_shape_error = 1;
+            continue;
+        }
+        const Complex *interaction_pair_values = interaction_pair_q.ptr();
+        for (std::size_t interaction_p = 0; interaction_p < interaction_block_rows; ++interaction_p)
+        {
+            Complex *interaction_dense_row =
+                interaction_dense_q.data()
+                + (interaction_row_layout.offsets[interaction_row_index] + interaction_p)
+                      * interaction_dense_columns
+                + interaction_column_layout.offsets[interaction_column_index];
+            for (std::size_t interaction_c = 0; interaction_c < interaction_block_columns;
+                 ++interaction_c)
+                interaction_dense_row[interaction_c] =
+                    interaction_pair_values[interaction_p * interaction_block_columns
+                                            + interaction_c];
+        }
+    }
+    if (interaction_shape_error)
+        throw std::runtime_error(
+            "interaction block does not match the auxiliary sizes of its atoms");
+}
+
+// stacked_coefficients[P][(m1 m2)] = C^mu_P(m1, m2)[k_left, k_right] from
+// RI::Cs_ao_mo_to_Cs_mo, one row block per atom of the layout.
+void build_stacked_mo_coefficients(
+    const std::map<int, std::map<int, RI::Tensor<Complex>>> &stacked_csk_ao_mo,
+    const std::map<int, std::map<int, RI::Tensor<Complex>>> &stacked_wavefunctions,
+    const AuxiliaryLayout &stacked_layout,
+    const int stacked_k_left, const int stacked_k_right,
+    const std::string &stacked_first_type, const std::string &stacked_second_type,
+    const std::size_t nocc, const std::size_t nvirt, const bool stacked_left_conj,
+    std::vector<Complex> &stacked_coefficients)
+{
+    const std::size_t stacked_width = mo_type_count(stacked_first_type, nocc, nvirt)
+                                      * mo_type_count(stacked_second_type, nocc, nvirt);
+    stacked_coefficients.assign(stacked_layout.total * stacked_width, Complex(0.0, 0.0));
+    const long long stacked_atom_count = static_cast<long long>(stacked_layout.atoms.size());
+    int stacked_shape_error = 0;
+
+#pragma omp parallel for schedule(dynamic)
+    for (long long stacked_atom_index = 0; stacked_atom_index < stacked_atom_count;
+         ++stacked_atom_index)
+    {
+        const RI::Tensor<Complex> stacked_atom_coefficients = RI::Cs_ao_mo_to_Cs_mo(
+            stacked_csk_ao_mo, stacked_wavefunctions, stacked_k_left, stacked_k_right,
+            stacked_layout.atoms[static_cast<std::size_t>(stacked_atom_index)],
+            stacked_first_type, stacked_second_type, nocc, nvirt, stacked_left_conj);
+        const std::size_t stacked_atom_values =
+            stacked_layout.sizes[static_cast<std::size_t>(stacked_atom_index)] * stacked_width;
+        if (stacked_atom_coefficients.get_shape_all() != stacked_atom_values)
+        {
+#pragma omp atomic write
+            stacked_shape_error = 1;
+            continue;
+        }
+        std::copy(stacked_atom_coefficients.ptr(),
+                  stacked_atom_coefficients.ptr() + stacked_atom_values,
+                  stacked_coefficients.data()
+                      + stacked_layout.offsets[static_cast<std::size_t>(stacked_atom_index)]
+                            * stacked_width);
+    }
+    if (stacked_shape_error)
+        throw std::runtime_error("RI MO coefficients do not match the auxiliary layout");
+}
+
+// Row-major product product_out[m][n] = op(left)[m][k] op(right)[k][n]
+// through LibRI's row-major BLAS wrapper. Called outside OpenMP regions, so
+// the OpenMP OpenBLAS uses all threads of the rank.
+void row_major_gemm(const char left_transpose, const char right_transpose,
+                    std::size_t product_rows, std::size_t product_columns,
+                    std::size_t product_inner,
+                    const Complex *product_left, const Complex *product_right,
+                    Complex *product_out)
+{
+    if (product_rows == 0 || product_columns == 0) return;
+    if (product_inner == 0)
+    {
+        std::fill(product_out, product_out + product_rows * product_columns,
+                  Complex(0.0, 0.0));
+        return;
+    }
+    RI::Blas_Interface::gemm(left_transpose, right_transpose,
+                             checked_blas_dimension(product_rows),
+                             checked_blas_dimension(product_columns),
+                             checked_blas_dimension(product_inner),
+                             Complex(1.0, 0.0), product_left, product_right,
+                             Complex(0.0, 0.0), product_out);
+}
+
+// Print progress at most about twenty times per stage and flush, so a long
+// stage is visible in a redirected log.
+void report_batch_progress(const char *progress_stage, unsigned long long progress_batch,
+                           unsigned long long progress_rounds, double progress_start)
+{
+    const unsigned long long progress_stride =
+        std::max<unsigned long long>(1, progress_rounds / 20);
+    if ((progress_batch + 1) % progress_stride != 0 && progress_batch + 1 != progress_rounds)
+        return;
+    // Format in a local stream so std::cout keeps its default float format.
+    std::ostringstream progress_line;
+    progress_line << "RI streaming " << progress_stage << ": batch " << (progress_batch + 1)
+                  << " / " << progress_rounds << ", elapsed " << std::fixed
+                  << std::setprecision(1) << (MPI_Wtime() - progress_start) << " s";
+    std::cout << progress_line.str() << std::endl;
+}
+
+} // namespace
+
 void MolecularLri::add_batched(std::vector<Complex> &matrix,
                                 const librpa_int::ArrayDesc &descriptor,
                                 double coefficient, bool hartree, bool is_a)
 {
-    const std::size_t limit = options_.bse_ri_batch_blocks;
-    const std::vector<std::string> psi = hartree
-        ? (is_a ? std::vector<std::string>{"O","V","O","V"}
-                : std::vector<std::string>{"O","V","O","V"})
-        : (is_a ? std::vector<std::string>{"O","O","V","V"}
-                : std::vector<std::string>{"V","O","O","V"});
-    // Only metadata is retained across batches, never all dense k-pair blocks.
-    std::vector<std::pair<KPoint, std::pair<int,int>>> pairs;
-    auto pairs_memory = libbse::watch_memory("molecular_lri.pairs", pairs);
-    if (!hartree)
-        for (const auto &[q, entries] : lr_.q2kpair)
-            for (const auto &entry : entries) pairs.emplace_back(q, entry);
-    const std::size_t col_batches = (lr_.k2_indices.size() + limit - 1) / limit;
-    unsigned long long batches = hartree ? lr_.k1_indices.size() * col_batches
-                                         : (pairs.size() + limit - 1) / limit;
-    unsigned long long rounds = 0;
-    MPI_Allreduce(&batches, &rounds, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX,
-                  descriptor.comm());
-    int rank = 0; MPI_Comm_rank(descriptor.comm(), &rank);
-    if (rank == 0)
-        std::cout << "RI streaming: " << (hartree ? "Hartree" : "screened")
-                  << " max " << limit << " k-pair blocks/rank, " << rounds
-                  << " collective batches\n";
-    for (unsigned long long batch = 0; batch < rounds; ++batch)
+    if (hartree)
+        add_batched_hartree(matrix, descriptor, coefficient, is_a);
+    else
+        add_batched_screened(matrix, descriptor, coefficient, is_a);
+    malloc_trim(0);
+}
+
+void MolecularLri::add_batched_hartree(std::vector<Complex> &matrix,
+                                       const librpa_int::ArrayDesc &descriptor,
+                                       double coefficient, bool is_a)
+{
+    // Hartree kernel of this rank's atom pairs (summed over ranks later):
+    //   A^H_{ia,jb}(k1,k2) = sum_{P in I, Q in J} C^P_{ia}(k1) V_PQ(q=0) C^Q_{jb}(k2)^*
+    //   (B: the same without the conjugation of C^Q).
+    // Step 1, once per k2:      D[P][jb] = sum_Q V_PQ(0) C^Q_{jb}(k2)
+    // Step 2, per (k1,k2) block: A[jb][ia] = sum_P D[P][jb] C^P_{ia}(k1)
+    // The block is stored as (j,b,i,a), as the LibRI on-the-fly kernel returns it.
+    const std::size_t nocc = options_.nocc;
+    const std::size_t nvirt = options_.nvirt;
+    const std::size_t hartree_pair_width = nocc * nvirt;
+    const std::size_t hartree_block_limit =
+        static_cast<std::size_t>(options_.bse_ri_batch_blocks);
+    const std::vector<int> &hartree_row_k = lr_.k1_indices;
+    const std::vector<int> &hartree_column_k = lr_.k2_indices;
+
+    // One batch = rows x columns k-pair blocks with rows * columns <= limit.
+    // Many k1 rows per batch keep the per-batch work large and reuse D(k2).
+    std::size_t hartree_rows_per_batch = 0;
+    std::size_t hartree_columns_per_batch = 0;
+    unsigned long long hartree_row_groups = 0;
+    unsigned long long hartree_batches = 0;
+    if (!hartree_row_k.empty() && !hartree_column_k.empty())
     {
-        KMatrixMap blocks;
-        auto blocks_memory = watch_memory("LibRI.batch_blocks", blocks);
-        if (batch < batches)
+        hartree_rows_per_batch = std::min(hartree_row_k.size(), hartree_block_limit);
+        hartree_columns_per_batch = std::min(
+            hartree_column_k.size(),
+            std::max<std::size_t>(1, hartree_block_limit / hartree_rows_per_batch));
+        hartree_row_groups =
+            (hartree_row_k.size() + hartree_rows_per_batch - 1) / hartree_rows_per_batch;
+        const unsigned long long hartree_column_groups =
+            (hartree_column_k.size() + hartree_columns_per_batch - 1)
+            / hartree_columns_per_batch;
+        hartree_batches = hartree_row_groups * hartree_column_groups;
+    }
+    unsigned long long hartree_rounds = 0;
+    MPI_Allreduce(&hartree_batches, &hartree_rounds, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX,
+                  descriptor.comm());
+    int rank = 0;
+    MPI_Comm_rank(descriptor.comm(), &rank);
+    if (rank == 0)
+        std::cout << "RI streaming: Hartree " << hartree_rows_per_batch << " k1 x "
+                  << hartree_columns_per_batch << " k2 blocks per batch on rank 0, "
+                  << hartree_rounds << " collective batches" << std::endl;
+
+    const AuxiliaryLayout hartree_row_layout =
+        build_auxiliary_layout(lr_.list_I, lr_.Csk_ao_mo, lr_.k_indices);
+    const AuxiliaryLayout hartree_column_layout =
+        build_auxiliary_layout(lr_.list_J, lr_.Csk_ao_mo, lr_.k_indices);
+
+    std::vector<Complex> hartree_coulomb_q0;
+    auto hartree_coulomb_q0_memory = watch_memory("hartree_coulomb_q0", hartree_coulomb_q0);
+    std::vector<Complex> hartree_column_coefficients;
+    auto hartree_column_coefficients_memory =
+        watch_memory("hartree_column_coefficients", hartree_column_coefficients);
+    std::vector<Complex> hartree_contracted_columns;
+    auto hartree_contracted_columns_memory =
+        watch_memory("hartree_contracted_columns", hartree_contracted_columns);
+    std::vector<Complex> hartree_row_coefficients;
+    auto hartree_row_coefficients_memory =
+        watch_memory("hartree_row_coefficients", hartree_row_coefficients);
+    KMatrixMap hartree_batch_blocks;
+    auto hartree_batch_blocks_memory = watch_memory("hartree_batch_blocks", hartree_batch_blocks);
+
+    const double hartree_start = MPI_Wtime();
+    double hartree_seconds_interaction = 0.0;
+    double hartree_seconds_coefficients = 0.0;
+    double hartree_seconds_gemm = 0.0;
+    double hartree_seconds_exchange = 0.0;
+
+    if (hartree_batches > 0)
+    {
+        // V_PQ(q=0) = sum_R V_PQ(R), built once for the whole stage.
+        const double hartree_interaction_start = MPI_Wtime();
+        build_dense_interaction_q(lr_.lrik, "Vs_", KPoint{0.0, 0.0, 0.0}, false,
+                                  hartree_row_layout, hartree_column_layout,
+                                  hartree_coulomb_q0);
+        hartree_seconds_interaction += MPI_Wtime() - hartree_interaction_start;
+    }
+    MemoryTracker::instance().checkpoint();
+
+    long long hartree_cached_column_group = -1;
+    const std::size_t hartree_auxiliary_rows = hartree_row_layout.total;
+    const std::size_t hartree_auxiliary_columns = hartree_column_layout.total;
+    for (unsigned long long hartree_batch = 0; hartree_batch < hartree_rounds; ++hartree_batch)
+    {
+        hartree_batch_blocks.clear();
+        if (hartree_batch < hartree_batches)
         {
-            if (hartree)
+            const unsigned long long hartree_column_group = hartree_batch / hartree_row_groups;
+            const unsigned long long hartree_row_group = hartree_batch % hartree_row_groups;
+            const std::size_t hartree_column_begin =
+                hartree_column_group * hartree_columns_per_batch;
+            const std::size_t hartree_column_end = std::min(
+                hartree_column_begin + hartree_columns_per_batch, hartree_column_k.size());
+            const std::size_t hartree_row_begin = hartree_row_group * hartree_rows_per_batch;
+            const std::size_t hartree_row_end =
+                std::min(hartree_row_begin + hartree_rows_per_batch, hartree_row_k.size());
+            const std::size_t hartree_contracted_size =
+                hartree_auxiliary_rows * hartree_pair_width;
+
+            if (static_cast<long long>(hartree_column_group) != hartree_cached_column_group)
             {
-                const std::vector<int> rows{lr_.k1_indices[batch / col_batches]};
-                auto rows_memory = libbse::watch_memory("molecular_lri.rows", rows);
-                const auto begin = (batch % col_batches) * limit;
-                const auto end = std::min<std::size_t>(begin + limit, lr_.k2_indices.size());
-                const std::vector<int> cols(lr_.k2_indices.begin() + begin,
-                                            lr_.k2_indices.begin() + end);
-                auto cols_memory = libbse::watch_memory("molecular_lri.cols", cols);
-                blocks = lr_.lrik.cal_cvc_mo_k_hartree_onthefly(
-                    lr_.Csk_ao_mo, lr_.map_psi, rows, cols, lr_.list_I, lr_.list_J,
-                    psi, options_.nocc, options_.nvirt, "Vs_", is_a);
+                hartree_contracted_columns.assign(
+                    (hartree_column_end - hartree_column_begin) * hartree_contracted_size,
+                    Complex(0.0, 0.0));
+                for (std::size_t hartree_column = hartree_column_begin;
+                     hartree_column < hartree_column_end; ++hartree_column)
+                {
+                    const int hartree_k2 = hartree_column_k[hartree_column];
+                    const double hartree_coefficients_start = MPI_Wtime();
+                    // C^Q_{jb}(k2) (conjugated for A), rows over list_J
+                    build_stacked_mo_coefficients(
+                        lr_.Csk_ao_mo, lr_.map_psi, hartree_column_layout,
+                        hartree_k2, hartree_k2, "O", "V", nocc, nvirt, is_a,
+                        hartree_column_coefficients);
+                    hartree_seconds_coefficients += MPI_Wtime() - hartree_coefficients_start;
+                    const double hartree_gemm_start = MPI_Wtime();
+                    // D[P][jb] = sum_Q V_PQ(0) C^Q_{jb}(k2)
+                    row_major_gemm('N', 'N', hartree_auxiliary_rows, hartree_pair_width,
+                                   hartree_auxiliary_columns, hartree_coulomb_q0.data(),
+                                   hartree_column_coefficients.data(),
+                                   hartree_contracted_columns.data()
+                                       + (hartree_column - hartree_column_begin)
+                                             * hartree_contracted_size);
+                    hartree_seconds_gemm += MPI_Wtime() - hartree_gemm_start;
+                }
+                hartree_cached_column_group = static_cast<long long>(hartree_column_group);
             }
-            else
+
+            for (std::size_t hartree_row = hartree_row_begin; hartree_row < hartree_row_end;
+                 ++hartree_row)
             {
-                std::map<KPoint, std::vector<std::pair<int,int>>> q_pairs;
-                const auto end = std::min<std::size_t>((batch + 1) * limit, pairs.size());
-                for (std::size_t i = batch * limit; i < end; ++i)
-                    q_pairs[pairs[i].first].push_back(pairs[i].second);
-                std::vector<KPoint> qs;
-                auto qs_memory = libbse::watch_memory("molecular_lri.qs", qs);
-                for (const auto &entry : q_pairs) qs.push_back(entry.first);
-                blocks = lr_.lrik.cal_cvc_mo_k_onthefly(
-                    lr_.Csk_ao_mo, lr_.map_psi, lr_.k1_indices, lr_.k2_indices,
-                    lr_.list_I, lr_.list_J, psi, options_.nocc, options_.nvirt,
-                    "Ws_", is_a, qs, q_pairs);
+                const int hartree_k1 = hartree_row_k[hartree_row];
+                const double hartree_coefficients_start = MPI_Wtime();
+                // C^P_{ia}(k1), rows over list_I
+                build_stacked_mo_coefficients(
+                    lr_.Csk_ao_mo, lr_.map_psi, hartree_row_layout,
+                    hartree_k1, hartree_k1, "O", "V", nocc, nvirt, false,
+                    hartree_row_coefficients);
+                hartree_seconds_coefficients += MPI_Wtime() - hartree_coefficients_start;
+                for (std::size_t hartree_column = hartree_column_begin;
+                     hartree_column < hartree_column_end; ++hartree_column)
+                {
+                    const int hartree_k2 = hartree_column_k[hartree_column];
+                    RI::Tensor<Complex> hartree_block({nocc, nvirt, nocc, nvirt});
+                    const double hartree_gemm_start = MPI_Wtime();
+                    // A[jb][ia] = sum_P D[P][jb] C^P_{ia}(k1)
+                    row_major_gemm('T', 'N', hartree_pair_width, hartree_pair_width,
+                                   hartree_auxiliary_rows,
+                                   hartree_contracted_columns.data()
+                                       + (hartree_column - hartree_column_begin)
+                                             * hartree_contracted_size,
+                                   hartree_row_coefficients.data(), hartree_block.ptr());
+                    hartree_seconds_gemm += MPI_Wtime() - hartree_gemm_start;
+                    hartree_batch_blocks[hartree_k1][hartree_k2] = std::move(hartree_block);
+                }
             }
         }
         MemoryTracker::instance().checkpoint();
         // Empty ranks participate too. Every rank uses the same global rounds.
-        // The generated block set is already bounded, so exchange it once.
-        transform_k_2dlocal(matrix, blocks, descriptor, nk_, pair_dimension_,
-                           coefficient, nk_);
+        const double hartree_exchange_start = MPI_Wtime();
+        transform_k_2dlocal(matrix, hartree_batch_blocks, descriptor, nk_, pair_dimension_,
+                            coefficient, nk_);
+        hartree_seconds_exchange += MPI_Wtime() - hartree_exchange_start;
+        if (rank == 0)
+            report_batch_progress("Hartree", hartree_batch, hartree_rounds, hartree_start);
     }
+    hartree_batch_blocks.clear();
+    if (rank == 0)
+        std::cout << "RI streaming Hartree seconds on rank 0: V(q=0) "
+                  << hartree_seconds_interaction << ", MO coefficients "
+                  << hartree_seconds_coefficients << ", gemm " << hartree_seconds_gemm
+                  << ", block exchange " << hartree_seconds_exchange << std::endl;
+}
+
+void MolecularLri::add_batched_screened(std::vector<Complex> &matrix,
+                                        const librpa_int::ArrayDesc &descriptor,
+                                        double coefficient, bool is_a)
+{
+    // Screened kernel of this rank's atom pairs (summed over ranks later):
+    //   A: A^W_{ia,jb}(k1,k2) = sum_{P in I, Q in J} C^P_{j*i}[k2,k1] W_PQ(q) C^Q_{b a*}[k2,k1]
+    //   B: B^W_{ia,jb}(k1,k2) = sum_{P in I, Q in J} C^P_{b*i}[k2,k1] W_PQ(q) C^Q_{j a*}[k2,k1]
+    // with q the canonical fine-mesh transfer of (k1,k2), as in LibRI
+    // cal_cvc_mo_k_onthefly. Per k pair:
+    //   D[P][(m3 m4)] = sum_Q W_PQ(q) C^Q_{m3 m4}
+    //   T[(m1 m2)][(m3 m4)] = sum_P C^P_{m1 m2} D[P][(m3 m4)]
+    // and T is reordered into the (j,b,i,a) block layout.
+    const std::size_t nocc = options_.nocc;
+    const std::size_t nvirt = options_.nvirt;
+    const std::size_t screened_block_limit =
+        static_cast<std::size_t>(options_.bse_ri_batch_blocks);
+    const std::vector<std::string> screened_mo_types = is_a
+        ? std::vector<std::string>{"O", "O", "V", "V"}
+        : std::vector<std::string>{"V", "O", "O", "V"};
+    const std::size_t screened_left_width =
+        mo_type_count(screened_mo_types[0], nocc, nvirt)
+        * mo_type_count(screened_mo_types[1], nocc, nvirt);
+    const std::size_t screened_right_width =
+        mo_type_count(screened_mo_types[2], nocc, nvirt)
+        * mo_type_count(screened_mo_types[3], nocc, nvirt);
+
+    // k pairs in q order, so each W(q) is assembled once.
+    std::vector<KPoint> screened_pair_q;
+    auto screened_pair_q_memory = watch_memory("screened_pair_q", screened_pair_q);
+    std::vector<std::pair<int, int>> screened_pair_k;
+    auto screened_pair_k_memory = watch_memory("screened_pair_k", screened_pair_k);
+    for (const auto &[screened_q, screened_q_pairs] : lr_.q2kpair)
+        for (const auto &screened_k_pair : screened_q_pairs)
+        {
+            screened_pair_q.push_back(screened_q);
+            screened_pair_k.push_back(screened_k_pair);
+        }
+    const unsigned long long screened_batches =
+        (screened_pair_k.size() + screened_block_limit - 1) / screened_block_limit;
+    unsigned long long screened_rounds = 0;
+    MPI_Allreduce(&screened_batches, &screened_rounds, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX,
+                  descriptor.comm());
+    int rank = 0;
+    MPI_Comm_rank(descriptor.comm(), &rank);
+    if (rank == 0)
+        std::cout << "RI streaming: screened max " << screened_block_limit
+                  << " k-pair blocks per batch, " << lr_.q2kpair.size()
+                  << " q on rank 0, " << screened_rounds << " collective batches"
+                  << std::endl;
+
+    const AuxiliaryLayout screened_row_layout =
+        build_auxiliary_layout(lr_.list_I, lr_.Csk_ao_mo, lr_.k_indices);
+    const AuxiliaryLayout screened_column_layout =
+        build_auxiliary_layout(lr_.list_J, lr_.Csk_ao_mo, lr_.k_indices);
+    const std::size_t screened_auxiliary_rows = screened_row_layout.total;
+    const std::size_t screened_auxiliary_columns = screened_column_layout.total;
+
+    std::vector<Complex> screened_interaction_q;
+    auto screened_interaction_q_memory =
+        watch_memory("screened_interaction_q", screened_interaction_q);
+    std::vector<Complex> screened_left_coefficients;
+    auto screened_left_coefficients_memory =
+        watch_memory("screened_left_coefficients", screened_left_coefficients);
+    std::vector<Complex> screened_right_coefficients;
+    auto screened_right_coefficients_memory =
+        watch_memory("screened_right_coefficients", screened_right_coefficients);
+    std::vector<Complex> screened_contracted_right;
+    auto screened_contracted_right_memory =
+        watch_memory("screened_contracted_right", screened_contracted_right);
+    std::vector<Complex> screened_pair_product;
+    auto screened_pair_product_memory =
+        watch_memory("screened_pair_product", screened_pair_product);
+    KMatrixMap screened_batch_blocks;
+    auto screened_batch_blocks_memory =
+        watch_memory("screened_batch_blocks", screened_batch_blocks);
+
+    const double screened_start = MPI_Wtime();
+    double screened_seconds_interaction = 0.0;
+    double screened_seconds_coefficients = 0.0;
+    double screened_seconds_gemm = 0.0;
+    double screened_seconds_exchange = 0.0;
+    bool screened_has_cached_q = false;
+    KPoint screened_cached_q{0.0, 0.0, 0.0};
+
+    for (unsigned long long screened_batch = 0; screened_batch < screened_rounds;
+         ++screened_batch)
+    {
+        screened_batch_blocks.clear();
+        if (screened_batch < screened_batches)
+        {
+            const std::size_t screened_pair_begin = screened_batch * screened_block_limit;
+            const std::size_t screened_pair_end =
+                std::min(screened_pair_begin + screened_block_limit, screened_pair_k.size());
+            for (std::size_t screened_pair = screened_pair_begin;
+                 screened_pair < screened_pair_end; ++screened_pair)
+            {
+                const KPoint &screened_q = screened_pair_q[screened_pair];
+                const int screened_k1 = screened_pair_k[screened_pair].first;
+                const int screened_k2 = screened_pair_k[screened_pair].second;
+                if (!screened_has_cached_q || screened_q != screened_cached_q)
+                {
+                    const double screened_interaction_start = MPI_Wtime();
+                    // W_PQ(q) = sum_R exp(i 2 pi q.R) W_PQ(R) (+ boundary correction)
+                    build_dense_interaction_q(lr_.lrik, "Ws_", screened_q, true,
+                                              screened_row_layout, screened_column_layout,
+                                              screened_interaction_q);
+                    screened_seconds_interaction += MPI_Wtime() - screened_interaction_start;
+                    screened_cached_q = screened_q;
+                    screened_has_cached_q = true;
+                }
+
+                const double screened_coefficients_start = MPI_Wtime();
+                // A: C^P_{j*i}[k2,k1]; B: C^P_{b*i}[k2,k1] (rows over list_I)
+                build_stacked_mo_coefficients(
+                    lr_.Csk_ao_mo, lr_.map_psi, screened_row_layout, screened_k2, screened_k1,
+                    screened_mo_types[0], screened_mo_types[1], nocc, nvirt, true,
+                    screened_left_coefficients);
+                // A: C^Q_{b a*}[k2,k1]; B: C^Q_{j a*}[k2,k1] (rows over list_J)
+                build_stacked_mo_coefficients(
+                    lr_.Csk_ao_mo, lr_.map_psi, screened_column_layout, screened_k2,
+                    screened_k1, screened_mo_types[2], screened_mo_types[3], nocc, nvirt,
+                    false, screened_right_coefficients);
+                screened_seconds_coefficients += MPI_Wtime() - screened_coefficients_start;
+
+                const double screened_gemm_start = MPI_Wtime();
+                screened_contracted_right.resize(screened_auxiliary_rows * screened_right_width);
+                screened_pair_product.resize(screened_left_width * screened_right_width);
+                // D[P][(m3 m4)] = sum_Q W_PQ(q) C^Q_{m3 m4}
+                row_major_gemm('N', 'N', screened_auxiliary_rows, screened_right_width,
+                               screened_auxiliary_columns, screened_interaction_q.data(),
+                               screened_right_coefficients.data(),
+                               screened_contracted_right.data());
+                // T[(m1 m2)][(m3 m4)] = sum_P C^P_{m1 m2} D[P][(m3 m4)]
+                row_major_gemm('T', 'N', screened_left_width, screened_right_width,
+                               screened_auxiliary_rows, screened_left_coefficients.data(),
+                               screened_contracted_right.data(), screened_pair_product.data());
+                screened_seconds_gemm += MPI_Wtime() - screened_gemm_start;
+
+                RI::Tensor<Complex> screened_block({nocc, nvirt, nocc, nvirt});
+                Complex *screened_block_values = screened_block.ptr();
+                const Complex *screened_product_values = screened_pair_product.data();
+                // Reorder T into the (j,b,i,a) block:
+                //   A: block(j,b,i,a) = T[(j,i)][(b,a)]
+                //   B: block(j,b,i,a) = T[(b,i)][(j,a)]
+                const long long screened_occupied_count = static_cast<long long>(nocc);
+#pragma omp parallel for schedule(static)
+                for (long long screened_j = 0; screened_j < screened_occupied_count; ++screened_j)
+                    for (std::size_t screened_b = 0; screened_b < nvirt; ++screened_b)
+                        for (std::size_t screened_i = 0; screened_i < nocc; ++screened_i)
+                        {
+                            const std::size_t screened_j_index =
+                                static_cast<std::size_t>(screened_j);
+                            Complex *screened_block_row =
+                                screened_block_values
+                                + ((screened_j_index * nvirt + screened_b) * nocc + screened_i)
+                                      * nvirt;
+                            const Complex *screened_product_row = is_a
+                                ? screened_product_values
+                                      + (screened_j_index * nocc + screened_i)
+                                            * screened_right_width
+                                      + screened_b * nvirt
+                                : screened_product_values
+                                      + (screened_b * nocc + screened_i)
+                                            * screened_right_width
+                                      + screened_j_index * nvirt;
+                            for (std::size_t screened_a = 0; screened_a < nvirt; ++screened_a)
+                                screened_block_row[screened_a] = screened_product_row[screened_a];
+                        }
+                RI::LRI_Cal_Aux::add_Ds(std::move(screened_block),
+                                        screened_batch_blocks[screened_k1][screened_k2]);
+            }
+        }
+        MemoryTracker::instance().checkpoint();
+        // Empty ranks participate too. Every rank uses the same global rounds.
+        const double screened_exchange_start = MPI_Wtime();
+        transform_k_2dlocal(matrix, screened_batch_blocks, descriptor, nk_, pair_dimension_,
+                            coefficient, nk_);
+        screened_seconds_exchange += MPI_Wtime() - screened_exchange_start;
+        if (rank == 0)
+            report_batch_progress("screened", screened_batch, screened_rounds, screened_start);
+    }
+    screened_batch_blocks.clear();
+    if (rank == 0)
+        std::cout << "RI streaming screened seconds on rank 0: W(q) "
+                  << screened_seconds_interaction << ", MO coefficients "
+                  << screened_seconds_coefficients << ", gemm " << screened_seconds_gemm
+                  << ", block exchange " << screened_seconds_exchange << std::endl;
 }
 
 void MolecularLri::add_hartree_a(std::vector<Complex> &matrix,

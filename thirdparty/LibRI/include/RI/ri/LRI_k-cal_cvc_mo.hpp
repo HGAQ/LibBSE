@@ -302,7 +302,7 @@ LRI_k<TA, Tcell, Ndim, Tdata>::cal_cvc_mo_k_onthefly(
 	{
 		// 2. calculate CVC_mo_k
 		std::map<int, std::map<int, Tensor<Tdata>>> cvc_mo_k_thread;
-#pragma omp for schedule(dynamic, 64) collapse(3)
+#pragma omp for schedule(dynamic) collapse(3)  // chunk 1: a streaming batch can have fewer than 64 iterations
 		for (const Tk q: q_list)
 		{
 			for (const TA mu: list_I)
@@ -456,7 +456,7 @@ LRI_k<TA, Tcell, Ndim, Tdata>::cal_cvc_mo_k_hartree_onthefly(
 
 		// 2 calculate CVC_mo_k
 		std::map<int, std::map<int, Tensor<Tdata>>> cvc_mo_k_thread;
-#pragma omp for schedule(dynamic, 64) collapse(2)
+#pragma omp for schedule(dynamic) collapse(2)  // chunk 1: with one k1 per call there are only |list_I| iterations
 		for (const TA mu : list_I)
 		{
 			for (const int k1: k1_indices)

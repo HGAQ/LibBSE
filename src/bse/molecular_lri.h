@@ -59,9 +59,18 @@ public:
     void release_interactions();
 
 private:
+    // Memory-bounded path (bse_ri_batch_blocks > 0). The interaction V(q=0)
+    // or W(q) is assembled once per q as a dense rank-local auxiliary matrix,
+    // and each returned k-pair block is formed by two threaded BLAS-3 products.
     void add_batched(std::vector<Complex> &matrix,
                      const librpa_int::ArrayDesc &descriptor,
                      double coefficient, bool hartree, bool is_a);
+    void add_batched_hartree(std::vector<Complex> &matrix,
+                             const librpa_int::ArrayDesc &descriptor,
+                             double coefficient, bool is_a);
+    void add_batched_screened(std::vector<Complex> &matrix,
+                              const librpa_int::ArrayDesc &descriptor,
+                              double coefficient, bool is_a);
     void build_exact_q_map();
     void build_wavefunctions();
 
