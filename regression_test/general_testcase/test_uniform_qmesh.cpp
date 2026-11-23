@@ -1,6 +1,8 @@
 #include "bse/uniform_qmesh.h"
 #include "bse/w_boundary_phase.h"
+#include <cmath>
 #include <iostream>
+#include <set>
 #include <stdexcept>
 
 int main()
@@ -33,6 +35,24 @@ int main()
               }
             if(qmesh_keys.size()!=qmesh_kpoints.size())
                 throw std::runtime_error("Transfer roundoff duplicates remain");
+            // k points printed with 9 digits (ABACUS stru_out) must still be a mesh,
+            // and their transfers must collapse to N^3 keys.
+            std::vector<std::array<double,3>> qmesh_rounded_kpoints=qmesh_kpoints;
+            for(auto &qmesh_rounded_k:qmesh_rounded_kpoints)
+              for(int qmesh_axis=0;qmesh_axis<3;++qmesh_axis)
+                qmesh_rounded_k[qmesh_axis]=std::round(qmesh_rounded_k[qmesh_axis]*1.e9)/1.e9;
+            if(libbse::infer_uniform_qmesh(qmesh_rounded_kpoints)!=qmesh_shape)
+                throw std::runtime_error("Mesh printed with 9 digits not recognized");
+            std::set<std::array<double,3>> qmesh_rounded_keys;
+            for(const auto &qmesh_k1:qmesh_rounded_kpoints)
+              for(const auto &qmesh_k2:qmesh_rounded_kpoints) {
+                std::array<double,3> qmesh_rounded_transfer;
+                for(int qmesh_axis=0;qmesh_axis<3;++qmesh_axis)
+                    qmesh_rounded_transfer[qmesh_axis]=qmesh_k2[qmesh_axis]-qmesh_k1[qmesh_axis];
+                qmesh_rounded_keys.insert(libbse::canonical_uniform_q(qmesh_rounded_transfer,qmesh_shape));
+              }
+            if(qmesh_rounded_keys.size()!=qmesh_kpoints.size())
+                throw std::runtime_error("Rounded transfers not merged");
             qmesh_kpoints[0][0]+=.001;
             if(libbse::infer_uniform_qmesh(qmesh_kpoints)!=std::array<int,3>{})
                 throw std::runtime_error("Irregular mesh incorrectly canonicalized");

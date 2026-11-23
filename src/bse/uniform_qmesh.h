@@ -15,7 +15,11 @@ namespace libbse
 inline std::array<int, 3> infer_uniform_qmesh(
     const std::vector<std::array<double, 3>> &qmesh_kpoints)
 {
-    constexpr double qmesh_tolerance = 1.e-10;
+    // Producers print k points with limited precision (ABACUS stru_out: 9
+    // digits in Cartesian units), so fractional coordinates can be off by
+    // ~1e-9. 1e-4 still rejects any real irregularity: mesh spacings 1/N are
+    // >= 1e-3 for N <= 1000.
+    constexpr double qmesh_tolerance = 1.e-4;
     std::array<int, 3> qmesh_shape{};
     std::array<double, 3> qmesh_origin{};
     if (qmesh_kpoints.empty()) return {};
