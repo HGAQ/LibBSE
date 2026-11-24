@@ -24,6 +24,7 @@ qp_data ../gw
 qp_format energy_qp
 screened_dir ../screening
 bse_nstates 8
+bse_screened_a_hermitian true
 nocc 2
 nvirt 3
 bse_solver spectrum
@@ -43,6 +44,7 @@ spectrum_energy_max_ev 8.0
 )", "/tmp/libbse-parameter-base");
 
     require(parameter.inp.bse_nstates == 8, "bse_nstates was not parsed");
+    require(parameter.inp.bse_screened_a_hermitian, "screened Hermitian option was not parsed");
     require(!parameter.inp.out_bse_eigenvectors, "eigenvector output was not disabled");
     require(parameter.inp.spectrum_only(), "bse_solver was not parsed");
     require(parameter.inp.nocc == 2 && parameter.inp.nvirt == 3,
@@ -88,6 +90,7 @@ out_bse_ab = false
     require(parameter.inp.output_dir == "/tmp/libbse.d",
             "default output_dir was not resolved against libbse.in");
     require(parameter.inp.out_bse_eigenvectors, "legacy eigenvector-output default changed");
+    require(!parameter.inp.bse_screened_a_hermitian, "experimental Hermitian default changed");
     require(parameter.inp.qp_data == "/tmp/second"
                 && parameter.inp.screened_dir == "/tmp/librpa.d",
             "default QP or screened-interaction path is incorrect");
@@ -144,6 +147,10 @@ void test_invalid_or_unsupported_parameters_are_rejected()
              "bse_fixed_operator_dir cache", "out_fixed_operators false"})
         require(rejected(removed_option + "\n"), "removed diagnostic option was accepted");
     require(rejected("bse_ri_batch_blocks -1\n"), "negative RI batch was not rejected");
+    require(rejected("bse_screened_a_hermitian true\nbse_ri_batch_blocks 1\n"),
+            "Hermitian reconstruction without room for a partner was accepted");
+    require(rejected("bse_screened_a_hermitian true\nbse_memory_optimized false\n"),
+            "Hermitian reconstruction on the legacy path was accepted");
     require(rejected("bse_memory_optimized unknown\n"), "malformed memory flag was not rejected");
     require(rejected("bse_nstates zero\n"), "malformed integer was not rejected");
     require(rejected("suffix old_output\n"), "obsolete suffix parameter was not rejected");

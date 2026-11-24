@@ -214,6 +214,8 @@ void Parameter::parse(const std::string &contents, const fs::path &base_director
         inp.bse_memory_optimized = parse_boolean("bse_memory_optimized", value);
     if (auto value = take("bse_ri_batch_blocks"); !value.empty())
         inp.bse_ri_batch_blocks = parse_integer("bse_ri_batch_blocks", value);
+    if (auto value = take("bse_screened_a_hermitian"); !value.empty())
+        inp.bse_screened_a_hermitian = parse_boolean("bse_screened_a_hermitian", value);
     if (auto value = take("bse_nstates"); !value.empty())
         inp.bse_nstates = parse_integer("bse_nstates", value);
     if (auto value = take("nocc"); !value.empty()) inp.nocc = parse_integer("nocc", value);
@@ -282,6 +284,10 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
     if (inp.bse_plasma_energy_ev > 0 && (inp.screened_format.find("chi0") == std::string::npos
         || inp.bse_tda != "tda" || inp.bse_solver != "elpa"))
         throw std::invalid_argument("effective dynamical BSE requires a chi0 input, bse_tda tda and bse_solver elpa");
+    if (inp.bse_screened_a_hermitian
+        && (!inp.bse_memory_optimized || inp.bse_ri_batch_blocks < 2))
+        throw std::invalid_argument(
+            "bse_screened_a_hermitian requires bse_memory_optimized and bse_ri_batch_blocks >= 2");
     if (inp.bse_ri_batch_blocks < 0)
         throw std::invalid_argument("bse_ri_batch_blocks must be nonnegative");
     inp.bse_solver = lower(trim(inp.bse_solver));
@@ -388,6 +394,7 @@ void Parameter::print(std::ostream &output) const
            << "  screened_dir: " << inp.screened_dir << '\n'
            << "  bse_memory_optimized: " << inp.bse_memory_optimized << '\n'
            << "  bse_ri_batch_blocks: " << inp.bse_ri_batch_blocks << '\n'
+           << "  bse_screened_a_hermitian: " << inp.bse_screened_a_hermitian << '\n'
            << "  bse_nstates: " << inp.bse_nstates << '\n'
            << "  nocc: " << inp.nocc << '\n'
            << "  nvirt: " << inp.nvirt << '\n'

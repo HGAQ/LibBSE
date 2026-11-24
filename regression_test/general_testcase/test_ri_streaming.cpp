@@ -56,6 +56,32 @@ int main(int argc,char **argv) {
                 if(all_error>5e-12)throw std::runtime_error("streamed RI matrix differs from unbatched result");
             }
         }
+        // Compare the actual distributed screened-A entries before ELPA.
+        // Use a nonzero destination to verify additive assembly semantics too.
+        options.bse_memory_optimized = true;
+        options.bse_ri_batch_blocks = 64;
+        options.bse_screened_a_hermitian = false;
+        std::vector<libbse::Complex> screened_reference(local, libbse::Complex(0.13, -0.21));
+        molecular.add_screened_a(screened_reference, desc, 0.7);
+        for (int screened_batch : {2, 3, 64})
+        {
+            options.bse_ri_batch_blocks = screened_batch;
+            options.bse_screened_a_hermitian = true;
+            std::vector<libbse::Complex> screened_candidate(local, libbse::Complex(0.13, -0.21));
+            molecular.add_screened_a(screened_candidate, desc, 0.7);
+            double screened_local_error = 0.0;
+            double screened_global_error = 0.0;
+            for (std::size_t screened_index = 0; screened_index < local; ++screened_index)
+                screened_local_error = std::max(screened_local_error,
+                    std::abs(screened_candidate[screened_index] - screened_reference[screened_index]));
+            MPI_Allreduce(&screened_local_error, &screened_global_error,
+                          1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+            if (rank == 0)
+                std::cout << "SCREENED_HERMITIAN_COMPARE batch=" << screened_batch
+                          << " max_abs=" << screened_global_error << '\n';
+            if (screened_global_error > 5.e-12)
+                throw std::runtime_error("Hermitian screened A differs from full k-pair assembly");
+        }
     }catch(const std::exception &e){std::cerr<<e.what()<<'\n';MPI_Abort(MPI_COMM_WORLD,1);}
     LibRPA_API::finalize();MPI_Finalize();return 0;
 }

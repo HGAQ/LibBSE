@@ -51,6 +51,8 @@ struct InputParameters
     // Storage/scheduling controls only: do not change the transition space.
     bool bse_memory_optimized = true;
     int bse_ri_batch_blocks = 64; // maximum returned k-pair blocks/rank; 0 = legacy
+    // Experimental reconstruction of reverse screened-A k pairs.
+    bool bse_screened_a_hermitian = false;
     int bse_nstates = -1;
     int nocc = 4;
     int nvirt = 4;

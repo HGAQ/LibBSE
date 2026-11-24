@@ -3,6 +3,7 @@
 #include "utils/profiler.h"
 #include "molecular_lri.h"
 #include "uniform_qmesh.h"
+#include "screened_hermitian.h"
 
 #include <RI/global/Array_Operator.h>
 #include <RI/global/Blas_Interface.h>
@@ -1044,6 +1045,10 @@ void MolecularLri::add_batched_screened(std::vector<Complex> &matrix,
     const std::size_t nvirt = options_.nvirt;
     const std::size_t screened_block_limit =
         static_cast<std::size_t>(options_.bse_ri_batch_blocks);
+    const bool screened_use_hermitian = is_a && options_.bse_screened_a_hermitian;
+    // Count original and conjugate partner blocks against the memory limit.
+    const std::size_t screened_pair_limit = screened_use_hermitian
+        ? screened_block_limit / 2 : screened_block_limit;
     const std::vector<std::string> screened_mo_types = is_a
         ? std::vector<std::string>{"O", "O", "V", "V"}
         : std::vector<std::string>{"V", "O", "O", "V"};
@@ -1062,11 +1067,14 @@ void MolecularLri::add_batched_screened(std::vector<Complex> &matrix,
     for (const auto &[screened_q, screened_q_pairs] : lr_.q2kpair)
         for (const auto &screened_k_pair : screened_q_pairs)
         {
+            if (screened_use_hermitian
+                && !retain_screened_k_pair(screened_k_pair.first, screened_k_pair.second))
+                continue;
             screened_pair_q.push_back(screened_q);
             screened_pair_k.push_back(screened_k_pair);
         }
     const unsigned long long screened_batches =
-        (screened_pair_k.size() + screened_block_limit - 1) / screened_block_limit;
+        (screened_pair_k.size() + screened_pair_limit - 1) / screened_pair_limit;
     unsigned long long screened_rounds = 0;
     MPI_Allreduce(&screened_batches, &screened_rounds, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX,
                   descriptor.comm());
@@ -1077,6 +1085,10 @@ void MolecularLri::add_batched_screened(std::vector<Complex> &matrix,
                   << " k-pair blocks per batch, " << lr_.q2kpair.size()
                   << " q on rank 0, " << screened_rounds << " collective batches"
                   << std::endl;
+
+    if (rank == 0 && screened_use_hermitian)
+        std::cout << "Screened A Hermitian reconstruction enabled; "
+                  << screened_pair_k.size() << " retained k pairs on rank 0" << std::endl;
 
     const AuxiliaryLayout screened_row_layout =
         build_auxiliary_layout(lr_.list_I, lr_.Csk_ao_mo, lr_.k_indices);
@@ -1118,9 +1130,9 @@ void MolecularLri::add_batched_screened(std::vector<Complex> &matrix,
         screened_batch_blocks.clear();
         if (screened_batch < screened_batches)
         {
-            const std::size_t screened_pair_begin = screened_batch * screened_block_limit;
+            const std::size_t screened_pair_begin = screened_batch * screened_pair_limit;
             const std::size_t screened_pair_end =
-                std::min(screened_pair_begin + screened_block_limit, screened_pair_k.size());
+                std::min(screened_pair_begin + screened_pair_limit, screened_pair_k.size());
             for (std::size_t screened_pair = screened_pair_begin;
                  screened_pair < screened_pair_end; ++screened_pair)
             {
@@ -1196,6 +1208,18 @@ void MolecularLri::add_batched_screened(std::vector<Complex> &matrix,
                             for (std::size_t screened_a = 0; screened_a < nvirt; ++screened_a)
                                 screened_block_row[screened_a] = screened_product_row[screened_a];
                         }
+                if (screened_use_hermitian && screened_k1 != screened_k2)
+                {
+                    RI::Tensor<Complex> screened_reverse_block({nocc, nvirt, nocc, nvirt});
+                    const std::size_t screened_transition_count = nocc * nvirt;
+                    // A(k2,k1) = A(k1,k2)^H after the atom-pair sum. Conjugate
+                    // every partial contribution and use the additive MPI route
+                    // for its partner too. Diagonal k blocks are never doubled.
+                    conjugate_screened_k_block(screened_block_values,
+                        screened_reverse_block.ptr(), screened_transition_count);
+                    RI::LRI_Cal_Aux::add_Ds(std::move(screened_reverse_block),
+                        screened_batch_blocks[screened_k2][screened_k1]);
+                }
                 RI::LRI_Cal_Aux::add_Ds(std::move(screened_block),
                                         screened_batch_blocks[screened_k1][screened_k2]);
             }
